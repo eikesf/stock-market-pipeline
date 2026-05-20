@@ -1,0 +1,55 @@
+name: stock_market_pipeline
+
+services:
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8-alpine
+    container_name: stock_clickhouse
+    restart: unless-stopped
+    ports:
+      - "8123:8123" # HTTP interface (BI tools / browser)
+      - "9000:9000" # Native TCP interface (clickhouse-connect)
+    env_file:
+      - ../.env
+    environment:
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    volumes:
+      - chdata:/var/lib/clickhouse
+      - ../src/db_init:/docker-entrypoint-initdb.d
+    networks:
+      - stream-network
+    healthcheck:
+      test: [ "CMD-SHELL", "clickhouse-client --user=${CLICKHOUSE_USER} --password=${CLICKHOUSE_PASSWORD} --query='SELECT 1'" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  python:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+    container_name: python_finance
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ../:/app
+      - ../data:/data
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - stream-network
+    command: tail -f /dev/null
+
+networks:
+  stream-network:
+    driver: bridge
+
+volumes:
+  chdata:

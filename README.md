@@ -1,0 +1,274 @@
+# End-to-End Batch Stock Market Pipeline
+
+![Python](https://img.shields.io/badge/Python-3.13-blue?style=flat-square&logo=python&logoColor=white)
+![PySpark](https://img.shields.io/badge/PySpark-4.1.1-e25a1c?style=flat-square&logo=apachespark&logoColor=white)
+![Delta Lake](https://img.shields.io/badge/Delta_Lake-4.2.0-00AAD2?style=flat-square)
+![ClickHouse](https://img.shields.io/badge/ClickHouse-25.8_LTS-FFCC01?style=flat-square&logo=clickhouse&logoColor=black)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)
+
+An end-to-end Data Engineering platform that ingests financial asset data and metadata from **B3, NASDAQ, and NYSE**, processes it through a **Medallion Architecture** (Landing → Bronze → Silver → Gold) using PySpark and Delta Lake, and delivers analytics-ready data via ClickHouse in a **Star Schema**.
+
+Each pipeline is exposed as an isolated `make` command, allowing granular execution or direct mapping to an Airflow `BashOperator`.
+
+## Table of Contents
+1. [Architecture & Pipelines](#architecture--pipelines)
+2. [Tech Stack](#tech-stack)
+3. [Project Structure](#project-structure)
+4. [Getting Started](#getting-started)
+5. [Executing the Pipelines](#executing-the-pipelines)
+6. [ClickHouse Analytics Star Schema](#clickhouse-analytics-star-schema)
+7. [Roadmap & Future Improvements](#roadmap--future-improvements)
+
+---
+
+## Architecture & Pipelines
+
+Two parallel ELT pipelines populate a Star Schema in ClickHouse (`fact_prices` as the Fact Table and `dim_companies` as the Dimension Table).
+
+```mermaid
+graph LR
+    YF["yfinance API"]
+
+    subgraph Pipeline_A ["Pipeline A: Prices"]
+        L_A["Landing Layer<br>(Local Parquet)"]
+        B_A["🥉 Bronze Layer<br>(Delta Lake)"]
+        S_A["🥈 Silver Layer<br>(Deduplication)"]
+        
+        L_A --> B_A --> S_A
+    end
+
+    subgraph Pipeline_B ["Pipeline B: Metadata"]
+        L_B["Landing Layer<br>(Local JSON/Parquet)"]
+        B_B["🥉 Bronze Layer<br>(Delta Lake)"]
+        S_B["🥈 Silver Layer<br>(Deduplication)"]
+        
+        L_B --> B_B --> S_B
+    end
+
+    subgraph Analytics_Gold ["🥇 Gold Layer: ClickHouse OLAP"]
+        G_FACT["fact_prices"]
+        G_DIM["dim_companies"]
+        
+        G_FACT -.->|Star Schema Join| G_DIM
+    end
+
+    YF ==>|Daily Ingestion| L_A
+    YF ==>|Monthly Ingestion| L_B
+
+    S_A ==> G_FACT
+    S_B ==> G_DIM
+
+    style YF fill:#1f77b4,stroke:#fff,stroke-width:2px,color:#fff
+    style Analytics_Gold fill:#ff7f0e,stroke:#fff,stroke-width:2px,color:#fff
+
+```
+
+**Pipeline A - Daily Stock Prices (Fact):** extracts daily OHLCV time-series from `yfinance`, stores raw Parquet files in the Landing zone, ingests into Delta Lake (Bronze), deduplicates via PySpark window functions (Silver), and loads into ClickHouse as `fact_prices`.
+
+**Pipeline B - Monthly Metadata (Dimension):** extracts company information (sector, industry, country, isin, full_time_employees, exchange, currency, market cap, dividend yield) from `yfinance`, follows the same Bronze/Silver medallion flow, and loads into ClickHouse as `dim_companies`.
+
+---
+
+## Tech Stack
+
+
+| Layer | Technology | Version | Why |
+|---|---|---|---|
+| **Language** | Python | `3.13-slim` | Current stable release; minimal Docker footprint via slim image. |
+| **Java Environment** | OpenJDK | `21` | JVM runtime required by Apache Spark 4.x. |
+| **Bronze / Silver** | PySpark + Delta Lake | `Spark 4.1.1` · `Delta 4.2.0` | ACID transactions, time travel, schema enforcement, and window-based deduplication. |
+| **Gold / OLAP** | ClickHouse | `25.8 LTS (Alpine)` | Columnar OLAP database providing sub-second aggregations on large datasets. |
+| **Database Driver** | clickhouse-connect | `Latest` | Official lightweight Python connector; no JDBC dependency required. |
+| **Orchestration** | GNU Make | `CLI` | Granular, isolated commands that map directly to `BashOperator` tasks. |
+
+---
+
+## Project Structure
+
+```text
+stock_market_pipeline/
+├── .env.example             # Environment variables template
+├── Makefile                 # CLI task runner
+├── requirements.txt         # Python dependencies (PySpark, Delta, Clickhouse)
+├── data/                    # Shared data volume (created at runtime)
+│   ├── bronze/              # Delta Bronze layer (prices/ & metadata/)
+│   ├── landing/             # Raw extractions (prices/ & metadata/)
+│   └── silver/              # Delta Silver layer (prices/ & metadata/)
+├── docker/
+│   ├── Dockerfile           # Python 3.13 + Java 21 image
+│   └── docker-compose.yml   # ClickHouse server + Python Spark executor
+└── src/
+    ├── db_init/init.sql     # ClickHouse DDL (auto-run on first boot)
+    ├── producer/            # Landing layer (extraction)
+    │   ├── config.py        # Configs and path mappings
+    │   ├── generator.py     # Pipeline A: prices extractor
+    │   ├── metadata_generator.py # Pipeline B: metadata extractor
+    │   └── tickers.py       # Monitored tickers (NASDAQ, B3, NYSE)
+    └── streaming/           # Medallion layers (Spark/Delta/ClickHouse)
+        ├── spark_session.py # SparkSession factory
+        ├── utils.py         # Shared IO utilities (Delta read/write & ClickHouse)
+        ├── bronze.py        # Bronze: prices ingestion
+        ├── silver.py        # Silver: prices deduplication
+        ├── bronze_metadata.py # Bronze: metadata ingestion
+        ├── silver_metadata.py # Silver: metadata deduplication
+        └── gold.py          # Gold: ClickHouse writer
+```
+
+---
+
+## Getting Started
+
+### Prerequisites
+- [Docker Desktop](https://docker.com) installed and running.
+- `make` installed (`brew install make` on macOS / Linux).
+
+### 1 — Configure environment variables
+
+Duplicate the environment variables file and configure your credentials:
+
+```bash
+cp .env.example .env
+```
+
+Your `.env` file should look like this:
+```ini
+# ClickHouse Credentials (OLAP - Gold Layer)
+CLICKHOUSE_HOST=clickhouse
+CLICKHOUSE_PORT=8123
+CLICKHOUSE_DB=stock_market
+CLICKHOUSE_USER=finance_admin
+CLICKHOUSE_PASSWORD=finance_secure_pass123
+
+# Data paths (Bronze and Silver - Delta Lake files inside container)
+BRONZE_PATH=/data/bronze
+SILVER_PATH=/data/silver
+```
+
+### 2 — Build and start the containers
+
+```bash
+make build
+```
+This starts two containers:
+- `stock_clickhouse`: ClickHouse server on HTTP port `8123` and native TCP port `9000`. Runs `src/db_init/init.sql` automatically on first boot.
+- `python_finance`: Isolated workspace with Python 3.13, Java 21, and all pipeline dependencies.
+
+### 3 — Tear down the environment
+
+```bash
+make down # Stop and remove containers (data is preserved)
+make clean # Stop containers and remove Docker volumes (ClickHouse data is lost)
+make reset # Full reset: clean + remove local data/ directory
+```
+
+---
+
+## Executing the Pipelines
+
+### Run the full Medallion Pipeline
+Triggers the entire workflow sequentially (Landing → Bronze → Silver → Gold):
+
+```bash
+make run
+```
+
+### Run Layer-Specific Commands
+
+#### Ingestion (Landing)
+
+```bash
+make run_landing_prices     # Extract daily prices from yfinance
+make run_landing_metadata   # Extract company metadata from yfinance
+```
+
+#### Bronze
+
+```bash
+make run_bronze_prices      # Load prices parquet -> Delta Bronze
+make run_bronze_metadata    # Load metadata parquet -> Delta Bronze
+```
+
+#### Silver
+
+```bash
+make run_silver_prices      # Deduplicate prices -> Delta Silver
+make run_silver_metadata    # Deduplicate metadata -> Delta Silver
+```
+
+#### Gold
+
+```bash
+make run_gold               # Load Silver data into ClickHouse
+```
+
+---
+
+## ClickHouse Analytics Star Schema
+
+Connect with DataGrip, DBeaver, or any ClickHouse-compatible client to `localhost:8123` using the credentials from your `.env` file.
+
+### Dimension Table: `stock_market.dim_companies`
+
+| Column | Type | Sorting Key | Description |
+|---|---|---|---|
+| `ticker` | LowCardinality(String) | Yes | Stock ticker symbol |
+| `short_name` | String | | Company display name |
+| `sector` | LowCardinality(String) | | GICS sector classification |
+| `industry` | LowCardinality(String) | | Industry classification |
+| `country` | LowCardinality(String) | | Country where the company is based |
+| `isin` | String | | International Securities Identification Number |
+| `full_time_employees` | UInt32 | | Number of full-time employees |
+| `exchange` | LowCardinality(String) | | Exchange (NASDAQ, NYSE, B3) |
+| `market_cap` | UInt64 | | Market capitalization in USD |
+| `currency` | LowCardinality(String) | | Currency in which the stock is traded |
+| `dividend_yield` | Decimal(10,2) | | Annual dividend yield (%) |
+| `extraction_date` | Date | | Date of yfinance extraction |
+| `ingestion_timestamp` | DateTime | | Ingestion timestamp |
+ 
+### Fact Table: `stock_market.fact_prices`
+
+| Column | Type | Sorting Key | Description |
+|---|---|---|---|
+| `date` | Date | Yes | Trading date |
+| `ticker` | LowCardinality(String) | Yes | Stock ticker symbol |
+| `open` | Decimal(10,2) | | Opening price |
+| `high` | Decimal(10,2) | | Daily high price |
+| `low` | Decimal(10,2) | | Daily low price |
+| `close` | Decimal(10,2) | | Closing price |
+| `adj_close` | Decimal(10,2) | | Adjusted closing price |
+| `volume` | UInt64 | | Shares traded |
+| `dividends` | Decimal(10,2) | | Total dividends paid during the day |
+| `stock_splits` | Decimal(10,4) | | Stock split ratio for the trading day |
+| `ingestion_timestamp` | DateTime | | Ingestion timestamp |
+ 
+> In ClickHouse, `MergeTree` does not have primary keys or foreign keys in the relational sense. The `ORDER BY` clause defines the **sorting key**,
+which also serves as the implicit sparse index used to skip data blocks during queries. Deduplication is handled upstream in the Silver layer before data reaches ClickHouse.
+
+> `fact_prices` is partitioned by `toYYYYMM(date)`, enabling partition
+pruning on date range filters and efficient monthly data management.
+
+### Example query
+
+```sql
+SELECT
+    c.short_name,
+    c.sector,
+    MAX(p.close) AS peak_price,
+    SUM(p.volume) AS total_traded_volume
+FROM
+   stock_market.fact_prices p
+JOIN
+   stock_market.dim_companies c ON p.ticker = c.ticker
+GROUP BY
+   c.sector,
+   c.short_name
+ORDER BY
+   total_traded_volume DESC;
+```
+
+---
+
+## Roadmap & Future Improvements
+- **Orchestration:** Implement Apache Airflow DAGs to replace `make` command execution.
+- **Data Quality:** Integrate Great Expectations or Soda for automated data quality assertions in the Silver layer.
+- **CI/CD:** Add GitHub Actions workflows for linting (Ruff/Flake8) and automated Docker image builds.
