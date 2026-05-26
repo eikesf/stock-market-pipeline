@@ -30,6 +30,10 @@ for col in ['adj_close', 'dividends', 'stock_splits']:
 if 'adj_close' not in tickers_long.columns:
     tickers_long['adj_close'] = tickers_long['close']
 
+# Ensure volume is an integer type (bigint/int64) to match Spark's expected schema
+if 'volume' in tickers_long.columns:
+    tickers_long['volume'] = tickers_long['volume'].fillna(0).astype('int64')
+
 tickers_long = tickers_long[['date', 'ticker', 'open', 'high', 'low', 'close', 'adj_close', 'volume', 'dividends', 'stock_splits']]
 
 # Keep only the latest available trading day for each ticker to prevent Bronze storage bloat
