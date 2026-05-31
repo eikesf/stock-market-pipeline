@@ -2,11 +2,13 @@ import os
 import sys
 from pyspark.sql import SparkSession
 from delta import configure_spark_with_delta_pip
+from src.utils.logger import logger
 
 def create_spark_session():
     """
     Create a Spark Session with Delta Lake configuration.
     """
+    logger.info("Initializing Spark Session...")
     spark = None
     try:
         builder = SparkSession.builder \
@@ -17,23 +19,33 @@ def create_spark_session():
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog"
             )
 
-        # Temporarily redirect stderr to suppress Ivy/Java startup logs
-        stderr_fileno = sys.stderr.fileno()
-        with os.fdopen(os.dup(stderr_fileno), 'wb') as backup:
-            with open(os.devnull, 'wb') as devnull:
-                os.dup2(devnull.fileno(), stderr_fileno)
-                
-                try:
-                    # Initialize Spark Session (where Ivy and Java warnings are emitted)
-                    spark = configure_spark_with_delta_pip(builder).getOrCreate()
-                    spark.sparkContext.setLogLevel("ERROR")
-                finally:
-                    # Always restore stderr
-                    os.dup2(backup.fileno(), stderr_fileno)
+        # Check if stderr is a real stream with a file descriptor (safeguard for pytest/notebooks)
+        has_fileno = False
+        try:
+            stderr_fileno = sys.stderr.fileno()
+            has_fileno = True
+        except Exception:
+            pass
+
+        if has_fileno:
+            with os.fdopen(os.dup(stderr_fileno), 'wb') as backup:
+                with open(os.devnull, 'wb') as devnull:
+                    os.dup2(devnull.fileno(), stderr_fileno)
+                    
+                    try:
+                        spark = configure_spark_with_delta_pip(builder).getOrCreate()
+                        spark.sparkContext.setLogLevel("ERROR")
+                    finally:
+                        os.dup2(backup.fileno(), stderr_fileno)
+        else:
+            logger.debug("Stderr redirection skipped (unsupported file descriptor in this environment).")
+            spark = configure_spark_with_delta_pip(builder).getOrCreate()
+            spark.sparkContext.setLogLevel("ERROR")
 
     except Exception as e:
-        print(f"Error creating SparkSession: {e}")
+        logger.exception(f"Error creating SparkSession: {e}")
         exit(1)
         
-    print("Spark Session created successfully.")
+    logger.success("Spark Session created successfully.")
     return spark
+
