@@ -16,8 +16,9 @@ Each pipeline is exposed as an isolated `make` command, allowing granular execut
 3. [Project Structure](#project-structure)
 4. [Getting Started](#getting-started)
 5. [Executing the Pipelines](#executing-the-pipelines)
-6. [ClickHouse Analytics Star Schema](#clickhouse-analytics-star-schema)
-7. [Roadmap & Future Improvements](#roadmap--future-improvements)
+6. [Running the Tests](#running-the-tests)
+7. [ClickHouse Analytics Star Schema](#clickhouse-analytics-star-schema)
+8. [Roadmap & Future Improvements](#roadmap--future-improvements)
 
 ---
 
@@ -200,6 +201,19 @@ make run_silver_metadata    # Deduplicate metadata -> Delta Silver
 ```bash
 make run_gold               # Load Silver data into ClickHouse
 ```
+
+---
+
+## Running the Tests
+
+The project includes a robust test suite with 36 unit and integration tests using `pytest` and `unittest.mock` to validate data quality, pipeline flows, exchange standardization, Spark deduplications, and ClickHouse transactional safety without requiring live database connections.
+
+To execute the test suite inside the Python Spark container:
+```bash
+docker exec python_finance python -m pytest
+```
+
+Test configuration can be customized in `pytest.ini`.
 
 ---
 
