@@ -1,8 +1,8 @@
 import io
-import json
-import requests
+
 import pandas as pd
-from pathlib import Path
+import requests
+
 from src.utils.logger import logger
 
 # Browser-like headers
@@ -15,21 +15,23 @@ _HEADERS = {
 }
 
 
-def _fetch_table(url: str, table_id: str = None, match: str = None, ticker_col: str = "Symbol") -> list[str]:
+def _fetch_table(
+    url: str, table_id: str | None = None, match: str | None = None, ticker_col: str = "Symbol"
+) -> list[str]:
     """Fetch an HTML page with browser headers and extract a table by id or matching text."""
     html = requests.get(url, headers=_HEADERS, timeout=15).text
-    
+
     kwargs = {}
     if table_id:
         kwargs["attrs"] = {"id": table_id}
     if match:
         kwargs["match"] = match
-        
+
     try:
         df = pd.read_html(io.StringIO(html), flavor="lxml", **kwargs)[0]
     except Exception:
         df = pd.read_html(io.StringIO(html), **kwargs)[0]
-        
+
     return df[ticker_col].tolist()
 
 
@@ -87,8 +89,8 @@ def get_all_tickers() -> dict[str, list[str]]:
     _cached_tickers = {
         # Yahoo Finance expects BRK-B instead of BRK.B
         "NASDAQ": [t.replace(".", "-") for t in nasdaq100_tickers],
-        "NYSE":   [t.replace(".", "-") for t in nyse_tickers],
-        "B3":     b3_tickers,
+        "NYSE": [t.replace(".", "-") for t in nyse_tickers],
+        "B3": b3_tickers,
     }
     return _cached_tickers
 

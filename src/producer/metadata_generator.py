@@ -1,10 +1,13 @@
-import yfinance as yf
-import pandas as pd
 import time
-from src.producer.tickers import get_all_tickers
-from src.producer.config import LANDING_METADATA_DIR
-from src.utils.logger import logger
 from datetime import datetime
+
+import pandas as pd
+import yfinance as yf
+
+from src.producer.config import LANDING_METADATA_DIR
+from src.producer.tickers import get_all_tickers
+from src.utils.logger import logger
+
 
 def run_metadata_generator():
     # Grab tickers from the dictionary
@@ -19,7 +22,7 @@ def run_metadata_generator():
         try:
             if i % 10 == 0:
                 logger.info(f"Processing {i}/{len(tickers)}...")
-                
+
             # Access Yahoo API for a specific ticker
             stock = yf.Ticker(t)
             info = stock.info
@@ -36,7 +39,7 @@ def run_metadata_generator():
                 "market_cap": info.get("marketCap", 0),
                 "currency": info.get("currency", "N/A"),
                 "dividend_yield": info.get("dividendYield", 0.0),
-                "extraction_date": datetime.now().strftime('%Y-%m-%d')
+                "extraction_date": datetime.now().strftime("%Y-%m-%d"),
             }
 
             metadata_records.append(record)
@@ -60,6 +63,7 @@ def run_metadata_generator():
     except Exception:
         logger.opt(exception=True).critical(f"Failed to write parquet file: {metadata_path}")
         exit(1)
+
 
 if __name__ == "__main__":
     run_metadata_generator()

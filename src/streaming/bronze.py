@@ -1,10 +1,12 @@
 import glob
-import shutil
 import os
+import shutil
+
+from pyspark.sql.functions import current_timestamp
+
+from src.producer.config import ARCHIVE_PRICES_DIR, BRONZE_PRICES_DIR, LANDING_PRICES_DIR
 from src.streaming.spark_session import create_spark_session
 from src.streaming.utils import write_delta_table
-from pyspark.sql.functions import current_timestamp
-from src.producer.config import BRONZE_PRICES_DIR, LANDING_PRICES_DIR, ARCHIVE_PRICES_DIR
 from src.utils.logger import logger
 
 # Creating spark session
@@ -12,10 +14,11 @@ spark = create_spark_session()
 try:
     try:
         # Reading landing stock data
-        stock_df_raw = spark.read \
-            .format("parquet") \
-            .load(str(LANDING_PRICES_DIR)) \
+        stock_df_raw = (
+            spark.read.format("parquet")
+            .load(str(LANDING_PRICES_DIR))
             .withColumn("ingestion_timestamp", current_timestamp())
+        )
     except Exception as e:
         logger.warning(f"Failed to read landing stock price data: {e}. Exiting cleanly as folder might be empty.")
         exit(0)
@@ -32,10 +35,10 @@ try:
             if dest_file.exists():
                 dest_file.unlink()  # Prevent collision and shutil.move errors on replays
             shutil.move(f, str(ARCHIVE_PRICES_DIR))
-            
+
         logger.info(f"Successfully archived {len(landing_files)} landing files to: {ARCHIVE_PRICES_DIR}")
         logger.success("Bronze (Prices) pipeline completed successfully.")
-        
+
     except Exception as e:
         logger.exception(f"Failed during Bronze prices pipeline execution: {e}")
         exit(1)

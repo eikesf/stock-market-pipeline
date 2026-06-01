@@ -1,12 +1,17 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-from src.producer.tickers import get_all_tickers
+
+from src.producer.tickers import _fetch_table, get_all_tickers
+
 
 # Clean the cache before the test
 @pytest.fixture(autouse=True)
 def clear_ticker_cache():
     import src.producer.tickers as tk
+
     tk._cached_tickers = None
+
 
 def mock_requests_get(url, *args, **kwargs):
     response_mock = MagicMock()
@@ -26,32 +31,31 @@ def mock_requests_get(url, *args, **kwargs):
         </table>
         """
     else:
-        response_mock.json.return_value = {
-            "stocks": [{"stock":"PETR4"}, {"stock":"VALE3"}]
-        }
+        response_mock.json.return_value = {"stocks": [{"stock": "PETR4"}, {"stock": "VALE3"}]}
     return response_mock
-        
+
 
 @patch("src.producer.tickers.requests.get")
 def test_get_all_tickers_success(mock_get):
     mock_get.side_effect = mock_requests_get
-    
+
     # Execute the function
     tickers = get_all_tickers()
-    
+
     # Assertions
     assert "NASDAQ" in tickers
     assert "AAPL" in tickers["NASDAQ"]
-    
+
     assert "BRK-B" in tickers["NASDAQ"]
     assert "BRK.B" not in tickers["NASDAQ"]
-    
+
     assert "NYSE" in tickers
     assert "KO" in tickers["NYSE"]
-    
+
     assert "B3" in tickers
     assert "PETR4.SA" in tickers["B3"]
     assert "VALE3.SA" in tickers["B3"]
+
 
 @patch("src.producer.tickers.requests.get")
 def test_get_all_tickers_wikipedia_fails(mock_get):
@@ -61,3 +65,39 @@ def test_get_all_tickers_wikipedia_fails(mock_get):
 
     assert "NASDAQ" in tickers
     assert "AAPL" in tickers["NASDAQ"]
+
+
+@patch("src.producer.tickers.requests.get")
+def test_get_all_tickers_caching(mock_get):
+    mock_get.side_effect = mock_requests_get
+
+    # First call will trigger fetches
+    tickers1 = get_all_tickers()
+    # Second call should return cached value and not call requests.get again
+    tickers2 = get_all_tickers()
+
+    assert tickers1 is tickers2
+    # The cache should be active, so call_count is not duplicated
+    # Note that get_all_tickers makes multiple requests in one run (Nasdaq, SP500, Brapi)
+    initial_calls = mock_get.call_count
+    get_all_tickers()
+    assert mock_get.call_count == initial_calls
+
+
+@patch("src.producer.tickers.requests.get")
+@patch("src.producer.tickers.pd.read_html")
+def test_fetch_table_match_and_flavor_fallback(mock_read_html, mock_get):
+    # Mock response
+    mock_response = MagicMock()
+    mock_response.text = "<html><body><table><tr><th>Symbol</th></tr><tr><td>MSFT</td></tr></table></body></html>"
+    mock_get.return_value = mock_response
+
+    # First call to read_html (with lxml) fails, second call (without flavor) succeeds
+    mock_df = MagicMock()
+    mock_df.columns = ["Symbol"]
+    mock_df.__getitem__.return_value.tolist.return_value = ["MSFT"]
+    mock_read_html.side_effect = [Exception("lxml failed"), [mock_df]]
+
+    res = _fetch_table("http://dummy.url", match="constituents")
+    assert res == ["MSFT"]
+    assert mock_read_html.call_count == 2
