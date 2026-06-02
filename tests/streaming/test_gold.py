@@ -85,7 +85,6 @@ def test_gold_load_success(spark_session, tmp_path):
     finally:
         logger.remove(sink_id)
 
-    # 1. Staging tables are created
     mock_client.command.assert_any_call(
         "CREATE TABLE IF NOT EXISTS stock_market.fact_prices_staging AS stock_market.fact_prices"
     )
@@ -93,11 +92,9 @@ def test_gold_load_success(spark_session, tmp_path):
         "CREATE TABLE IF NOT EXISTS stock_market.dim_companies_staging AS stock_market.dim_companies"
     )
 
-    # 2. Staging tables are truncated
     mock_client.command.assert_any_call("TRUNCATE TABLE stock_market.fact_prices_staging")
     mock_client.command.assert_any_call("TRUNCATE TABLE stock_market.dim_companies_staging")
 
-    # 3. Data is inserted
     assert mock_client.insert_df.call_count == 2
     first_call_args = mock_client.insert_df.call_args_list[0][0]
     second_call_args = mock_client.insert_df.call_args_list[1][0]
@@ -108,13 +105,11 @@ def test_gold_load_success(spark_session, tmp_path):
     assert second_call_args[0] == "stock_market.dim_companies_staging"
     assert isinstance(second_call_args[1], pd.DataFrame)
 
-    # 4. Atomic exchanges are executed
     mock_client.command.assert_any_call("EXCHANGE TABLES stock_market.fact_prices AND stock_market.fact_prices_staging")
     mock_client.command.assert_any_call(
         "EXCHANGE TABLES stock_market.dim_companies AND stock_market.dim_companies_staging"
     )
 
-    # 5. Staging tables are dropped
     mock_client.command.assert_any_call("DROP TABLE IF EXISTS stock_market.fact_prices_staging")
     mock_client.command.assert_any_call("DROP TABLE IF EXISTS stock_market.dim_companies_staging")
 
@@ -303,7 +298,6 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
     finally:
         logger.remove(sink_id)
 
-    # Check that staging creation and exchange were still executed
     assert mock_client.insert_df.call_count == 2
     first_call_args = mock_client.insert_df.call_args_list[0][0]
     second_call_args = mock_client.insert_df.call_args_list[1][0]
