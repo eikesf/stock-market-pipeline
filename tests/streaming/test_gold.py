@@ -85,7 +85,7 @@ def test_gold_load_success(spark_session, tmp_path):
             if "src.streaming.gold" in sys.modules:
                 importlib.reload(sys.modules["src.streaming.gold"])
             else:
-                import src.streaming.gold  # noqa: F401
+                importlib.import_module("src.streaming.gold")
     finally:
         logger.remove(sink_id)
 
@@ -199,7 +199,7 @@ def test_gold_clickhouse_interaction_failure(spark_session, tmp_path):
                 if "src.streaming.gold" in sys.modules:
                     importlib.reload(sys.modules["src.streaming.gold"])
                 else:
-                    import src.streaming.gold  # noqa: F401
+                    importlib.import_module("src.streaming.gold")
     finally:
         logger.remove(sink_id)
 
@@ -317,7 +317,7 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
             if "src.streaming.gold" in sys.modules:
                 importlib.reload(sys.modules["src.streaming.gold"])
             else:
-                import src.streaming.gold  # noqa: F401
+                importlib.import_module("src.streaming.gold")
     finally:
         logger.remove(sink_id)
 

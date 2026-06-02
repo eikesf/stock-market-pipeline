@@ -25,8 +25,8 @@ def create_spark_session():
         try:
             stderr_fileno = sys.stderr.fileno()
             has_fileno = True
-        except Exception:  # noqa: S110
-            pass
+        except Exception:
+            has_fileno = False
 
         if has_fileno:
             with os.fdopen(os.dup(stderr_fileno), "wb") as backup:

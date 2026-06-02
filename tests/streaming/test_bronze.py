@@ -51,7 +51,7 @@ def test_bronze_success_path(spark_session, tmp_path):
         if "src.streaming.bronze" in sys.modules:
             importlib.reload(sys.modules["src.streaming.bronze"])
         else:
-            import src.streaming.bronze  # noqa: F401
+            importlib.import_module("src.streaming.bronze")
 
     # Assert raw parquet files were moved to archive and Delta table was written
     assert len(list(landing_dir.glob("*.parquet"))) == 0
@@ -91,7 +91,7 @@ def test_bronze_empty_landing(spark_session, tmp_path):
             if "src.streaming.bronze" in sys.modules:
                 importlib.reload(sys.modules["src.streaming.bronze"])
             else:
-                import src.streaming.bronze  # noqa: F401
+                importlib.import_module("src.streaming.bronze")
 
     # Assert clean exit code and that no files were written or archived
     assert exc_info.value.code == 0
@@ -152,7 +152,7 @@ def test_bronze_processing_failure(spark_session, tmp_path):
                 if "src.streaming.bronze" in sys.modules:
                     importlib.reload(sys.modules["src.streaming.bronze"])
                 else:
-                    import src.streaming.bronze  # noqa: F401
+                    importlib.import_module("src.streaming.bronze")
     finally:
         logger.remove(sink_id)
 

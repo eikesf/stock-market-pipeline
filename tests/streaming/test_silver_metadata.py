@@ -51,7 +51,7 @@ def test_silver_metadata_cleaning_and_casting(spark_session, tmp_path):
         if "src.streaming.silver_metadata" in sys.modules:
             importlib.reload(sys.modules["src.streaming.silver_metadata"])
         else:
-            import src.streaming.silver_metadata  # noqa: F401
+            importlib.import_module("src.streaming.silver_metadata")
 
     # Read pipeline output and assert formatting/casing rules
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
@@ -194,7 +194,7 @@ def test_silver_metadata_null_dropping(spark_session, tmp_path):
         if "src.streaming.silver_metadata" in sys.modules:
             importlib.reload(sys.modules["src.streaming.silver_metadata"])
         else:
-            import src.streaming.silver_metadata  # noqa: F401
+            importlib.import_module("src.streaming.silver_metadata")
 
     # Read pipeline output and assert that only the valid row survived
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
@@ -345,7 +345,7 @@ def test_silver_metadata_exchange_standardization(spark_session, tmp_path):
         if "src.streaming.silver_metadata" in sys.modules:
             importlib.reload(sys.modules["src.streaming.silver_metadata"])
         else:
-            import src.streaming.silver_metadata  # noqa: F401
+            importlib.import_module("src.streaming.silver_metadata")
 
     # Read output and verify the mapping of each exchange
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
@@ -430,7 +430,7 @@ def test_silver_metadata_deduplication_by_ticker(spark_session, tmp_path):
         if "src.streaming.silver_metadata" in sys.modules:
             importlib.reload(sys.modules["src.streaming.silver_metadata"])
         else:
-            import src.streaming.silver_metadata  # noqa: F401
+            importlib.import_module("src.streaming.silver_metadata")
 
     # Read output and verify deduplication
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
@@ -495,7 +495,7 @@ def test_silver_metadata_failure(spark_session, tmp_path):
                 if "src.streaming.silver_metadata" in sys.modules:
                     importlib.reload(sys.modules["src.streaming.silver_metadata"])
                 else:
-                    import src.streaming.silver_metadata  # noqa: F401
+                    importlib.import_module("src.streaming.silver_metadata")
     finally:
         logger.remove(sink_id)
 

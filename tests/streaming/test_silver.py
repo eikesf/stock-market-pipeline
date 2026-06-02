@@ -52,7 +52,7 @@ def test_silver_prices_cleaning_and_casting(spark_session, tmp_path):
         if "src.streaming.silver" in sys.modules:
             importlib.reload(sys.modules["src.streaming.silver"])
         else:
-            import src.streaming.silver  # noqa: F401
+            importlib.import_module("src.streaming.silver")
 
     # Read pipeline output and assert formatting/casing rules
     df_silver = spark_session.read.format("delta").load(str(silver_dir))
@@ -129,7 +129,7 @@ def test_silver_prices_null_dropping(spark_session, tmp_path):
         if "src.streaming.silver" in sys.modules:
             importlib.reload(sys.modules["src.streaming.silver"])
         else:
-            import src.streaming.silver  # noqa: F401
+            importlib.import_module("src.streaming.silver")
 
     # Check that only the valid row survived the null filtering
     df_silver = spark_session.read.format("delta").load(str(silver_dir))
@@ -176,7 +176,7 @@ def test_silver_prices_deduplication(spark_session, tmp_path):
         if "src.streaming.silver" in sys.modules:
             importlib.reload(sys.modules["src.streaming.silver"])
         else:
-            import src.streaming.silver  # noqa: F401
+            importlib.import_module("src.streaming.silver")
 
     # Verify that duplicate entries were resolved, preserving the newest record
     df_silver = spark_session.read.format("delta").load(str(silver_dir))
@@ -234,7 +234,7 @@ def test_silver_prices_failure(spark_session, tmp_path):
                 if "src.streaming.silver" in sys.modules:
                     importlib.reload(sys.modules["src.streaming.silver"])
                 else:
-                    import src.streaming.silver  # noqa: F401
+                    importlib.import_module("src.streaming.silver")
     finally:
         logger.remove(sink_id)
 
