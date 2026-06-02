@@ -13,14 +13,12 @@ def test_silver_prices_cleaning_and_casting(spark_session, tmp_path):
     """
     Test that the Silver prices pipeline correctly cleans and casts columns.
     """
-    # Set up isolated temporary directories
     bronze_dir = tmp_path / "bronze"
     bronze_dir.mkdir(parents=True, exist_ok=True)
 
     silver_dir = tmp_path / "silver"
     silver_dir.mkdir(parents=True, exist_ok=True)
 
-    # Input data has untrimmed/lowercase ticker, and precise values to test all casting operations
     df_bronze = pd.DataFrame(
         {
             "date": ["2026-05-28"],
@@ -37,28 +35,23 @@ def test_silver_prices_cleaning_and_casting(spark_session, tmp_path):
         }
     )
 
-    # Convert to Spark DataFrame and write as a Delta table (source format)
     df_bronze_spark = spark_session.createDataFrame(df_bronze)
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_dir))
 
-    # Mock environment configuration directories and bypass Spark stop during tests
     with (
         patch("src.producer.config.BRONZE_PRICES_DIR", bronze_dir),
         patch("src.producer.config.SILVER_PRICES_DIR", silver_dir),
         patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        # Reload or import the script to trigger module-level execution
         if "src.streaming.silver" in sys.modules:
             importlib.reload(sys.modules["src.streaming.silver"])
         else:
             importlib.import_module("src.streaming.silver")
 
-    # Read pipeline output and assert formatting/casing rules
     df_silver = spark_session.read.format("delta").load(str(silver_dir))
     row = df_silver.collect()[0]
 
-    # Assert data cleans and casts to the correct values and representations
     assert row.ticker == "MSFT"
     assert row.date == date(2026, 5, 28)
     assert row.open == Decimal("170.50")
@@ -68,17 +61,15 @@ def test_silver_prices_cleaning_and_casting(spark_session, tmp_path):
     assert row.adj_close == Decimal("171.55")
     assert row.volume == 10000
     assert row.dividends == Decimal("0.50")
-    assert row.stock_splits == Decimal("0.1235")  # Rounded to 4 decimal places
+    assert row.stock_splits == Decimal("0.1235")
     assert row.ingestion_timestamp == datetime(2026, 5, 28, 10, 0, 0)
     assert df_silver.count() == 1
 
-    # Assert data types are cast correctly in schema
     assert isinstance(df_silver.schema["date"].dataType, DateType)
     assert isinstance(df_silver.schema["ticker"].dataType, StringType)
     assert isinstance(df_silver.schema["ingestion_timestamp"].dataType, TimestampType)
     assert isinstance(df_silver.schema["volume"].dataType, LongType)
 
-    # Validate decimal precision and scale for pricing fields
     decimal_2_cols = ["open", "high", "low", "close", "adj_close", "dividends"]
     for col_name in decimal_2_cols:
         assert isinstance(df_silver.schema[col_name].dataType, DecimalType)
@@ -100,7 +91,6 @@ def test_silver_prices_null_dropping(spark_session, tmp_path):
     silver_dir = tmp_path / "silver"
     silver_dir.mkdir(parents=True, exist_ok=True)
 
-    # Prepare input containing one invalid row (AAPL has null close/open) and one valid row (MSFT)
     df_bronze = pd.DataFrame(
         {
             "date": ["2026-05-28", "2026-05-28"],
@@ -131,7 +121,6 @@ def test_silver_prices_null_dropping(spark_session, tmp_path):
         else:
             importlib.import_module("src.streaming.silver")
 
-    # Check that only the valid row survived the null filtering
     df_silver = spark_session.read.format("delta").load(str(silver_dir))
     assert df_silver.count() == 1
     assert df_silver.collect()[0].ticker == "MSFT"
@@ -147,7 +136,6 @@ def test_silver_prices_deduplication(spark_session, tmp_path):
     silver_dir = tmp_path / "silver"
     silver_dir.mkdir(parents=True, exist_ok=True)
 
-    # Prepare duplicate records with different timestamps; the newer one should be kept
     df_bronze = pd.DataFrame(
         {
             "date": ["2026-05-28", "2026-05-28"],
@@ -178,7 +166,6 @@ def test_silver_prices_deduplication(spark_session, tmp_path):
         else:
             importlib.import_module("src.streaming.silver")
 
-    # Verify that duplicate entries were resolved, preserving the newest record
     df_silver = spark_session.read.format("delta").load(str(silver_dir))
     assert df_silver.count() == 1
     assert df_silver.collect()[0].ticker == "AAPL"
@@ -217,12 +204,11 @@ def test_silver_prices_failure(spark_session, tmp_path):
 
     from loguru import logger
 
-    # Add a dynamic sink to loguru to capture ERROR logs
+    # Capture logs to assert expected error messages on pipeline failure
     captured_logs = []
     sink_id = logger.add(lambda msg: captured_logs.append(str(msg)), level="ERROR")
 
     try:
-        # Inject a write exception to simulate a failure and check exit behavior
         with (
             patch("src.producer.config.BRONZE_PRICES_DIR", bronze_dir),
             patch("src.producer.config.SILVER_PRICES_DIR", silver_dir),
@@ -238,11 +224,9 @@ def test_silver_prices_failure(spark_session, tmp_path):
     finally:
         logger.remove(sink_id)
 
-    # Check failure code and transactional isolation (no parquet files written to destination)
     assert exc_info.value.code == 1
     assert len(list(silver_dir.glob("**/*.parquet"))) == 0
 
-    # Verify that the exception is logged to our loguru sink
     log_content = "".join(captured_logs)
     assert "Failed to process Silver layer" in log_content
     assert "Simulated writing failure" in log_content

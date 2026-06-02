@@ -39,10 +39,8 @@ def mock_requests_get(url, *args, **kwargs):
 def test_get_all_tickers_success(mock_get):
     mock_get.side_effect = mock_requests_get
 
-    # Execute the function
     tickers = get_all_tickers()
 
-    # Assertions
     assert "NASDAQ" in tickers
     assert "AAPL" in tickers["NASDAQ"]
 
@@ -69,16 +67,19 @@ def test_get_all_tickers_wikipedia_fails(mock_get):
 
 @patch("src.producer.tickers.requests.get")
 def test_get_all_tickers_caching(mock_get):
+    """
+    Verify that get_all_tickers caches the fetched data in-memory on the first call,
+    returning the exact same object reference and bypassing network requests subsequently.
+    """
     mock_get.side_effect = mock_requests_get
 
-    # First call will trigger fetches
     tickers1 = get_all_tickers()
-    # Second call should return cached value and not call requests.get again
     tickers2 = get_all_tickers()
 
+    # Confirm object identity to ensure the in-memory dictionary is reused without reallocation
     assert tickers1 is tickers2
-    # The cache should be active, so call_count is not duplicated
-    # Note that get_all_tickers makes multiple requests in one run (Nasdaq, SP500, Brapi)
+
+    # Confirm that subsequent invocations do not trigger further HTTP requests
     initial_calls = mock_get.call_count
     get_all_tickers()
     assert mock_get.call_count == initial_calls
@@ -87,15 +88,20 @@ def test_get_all_tickers_caching(mock_get):
 @patch("src.producer.tickers.requests.get")
 @patch("src.producer.tickers.pd.read_html")
 def test_fetch_table_match_and_flavor_fallback(mock_read_html, mock_get):
-    # Mock response
+    """
+    Verify that _fetch_table correctly falls back to Pandas' default parser selection
+    when the explicitly requested 'lxml' parser raises an exception.
+    """
     mock_response = MagicMock()
     mock_response.text = "<html><body><table><tr><th>Symbol</th></tr><tr><td>MSFT</td></tr></table></body></html>"
     mock_get.return_value = mock_response
 
-    # First call to read_html (with lxml) fails, second call (without flavor) succeeds
     mock_df = MagicMock()
     mock_df.columns = ["Symbol"]
     mock_df.__getitem__.return_value.tolist.return_value = ["MSFT"]
+
+    # Simulate parser recovery: the first call with flavor="lxml" fails,
+    # forcing a fallback attempt without flavor restrictions on the second call.
     mock_read_html.side_effect = [Exception("lxml failed"), [mock_df]]
 
     res = _fetch_table("http://dummy.url", match="constituents")

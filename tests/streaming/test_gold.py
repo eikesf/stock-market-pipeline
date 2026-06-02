@@ -21,14 +21,13 @@ def test_gold_load_success(spark_session, tmp_path):
     """
     Test successful Gold layer pipeline execution and ClickHouse integrations.
     """
-    # Set up isolated temporary directories
+
     silver_prices_dir = tmp_path / "silver_prices"
     silver_prices_dir.mkdir(parents=True, exist_ok=True)
 
     silver_metadata_dir = tmp_path / "silver_metadata"
     silver_metadata_dir.mkdir(parents=True, exist_ok=True)
 
-    # Input data
     df_prices = pd.DataFrame(
         {
             "date": ["2026-05-28"],
@@ -63,14 +62,11 @@ def test_gold_load_success(spark_session, tmp_path):
         }
     )
 
-    # Write as Delta tables
     spark_session.createDataFrame(df_prices).write.format("delta").mode("overwrite").save(str(silver_prices_dir))
     spark_session.createDataFrame(df_metadata).write.format("delta").mode("overwrite").save(str(silver_metadata_dir))
 
-    # Mock ClickHouse client
     mock_client = MagicMock()
 
-    # Capture log messages
     captured_logs = []
     sink_id = logger.add(lambda msg: captured_logs.append(str(msg)), level="INFO")
 
@@ -89,7 +85,6 @@ def test_gold_load_success(spark_session, tmp_path):
     finally:
         logger.remove(sink_id)
 
-    # Assert ClickHouse interactions
     # 1. Staging tables are created
     mock_client.command.assert_any_call(
         "CREATE TABLE IF NOT EXISTS stock_market.fact_prices_staging AS stock_market.fact_prices"
@@ -123,7 +118,6 @@ def test_gold_load_success(spark_session, tmp_path):
     mock_client.command.assert_any_call("DROP TABLE IF EXISTS stock_market.fact_prices_staging")
     mock_client.command.assert_any_call("DROP TABLE IF EXISTS stock_market.dim_companies_staging")
 
-    # Assert logs
     log_content = "".join(captured_logs)
     assert "Starting Gold layer processing" in log_content
     assert "Gold layer processing completed successfully" in log_content
@@ -133,14 +127,12 @@ def test_gold_clickhouse_interaction_failure(spark_session, tmp_path):
     """
     Test Gold pipeline exit code 1 when ClickHouse query or insertion fails.
     """
-    # Set up isolated temporary directories
     silver_prices_dir = tmp_path / "silver_prices"
     silver_prices_dir.mkdir(parents=True, exist_ok=True)
 
     silver_metadata_dir = tmp_path / "silver_metadata"
     silver_metadata_dir.mkdir(parents=True, exist_ok=True)
 
-    # Input data
     df_prices = pd.DataFrame(
         {
             "date": ["2026-05-28"],
@@ -175,15 +167,12 @@ def test_gold_clickhouse_interaction_failure(spark_session, tmp_path):
         }
     )
 
-    # Write as Delta tables
     spark_session.createDataFrame(df_prices).write.format("delta").mode("overwrite").save(str(silver_prices_dir))
     spark_session.createDataFrame(df_metadata).write.format("delta").mode("overwrite").save(str(silver_metadata_dir))
 
-    # Mock ClickHouse client to raise an exception on command call
     mock_client = MagicMock()
     mock_client.command.side_effect = Exception("Simulated ClickHouse connection failure")
 
-    # Capture log messages
     captured_logs = []
     sink_id = logger.add(lambda msg: captured_logs.append(str(msg)), level="ERROR")
 
@@ -203,10 +192,8 @@ def test_gold_clickhouse_interaction_failure(spark_session, tmp_path):
     finally:
         logger.remove(sink_id)
 
-    # Check failure code
     assert exc_info.value.code == 1
 
-    # Verify that the exception is logged to our loguru sink
     log_content = "".join(captured_logs)
     assert "Failed to process Gold layer" in log_content
     assert "Simulated ClickHouse connection failure" in log_content
@@ -216,14 +203,12 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
     """
     Test Gold pipeline execution when Silver input dataset is empty.
     """
-    # Set up isolated temporary directories
     silver_prices_dir = tmp_path / "silver_prices"
     silver_prices_dir.mkdir(parents=True, exist_ok=True)
 
     silver_metadata_dir = tmp_path / "silver_metadata"
     silver_metadata_dir.mkdir(parents=True, exist_ok=True)
 
-    # Empty DataFrames with the correct schemas
     df_prices = pd.DataFrame(
         columns=[
             "date",
@@ -257,7 +242,6 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
         ]
     )
 
-    # Convert to spark and write to Delta
     prices_schema = StructType(
         [
             StructField("date", DateType(), True),
@@ -299,10 +283,8 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
         str(silver_metadata_dir)
     )
 
-    # Mock ClickHouse client
     mock_client = MagicMock()
 
-    # Capture log messages
     captured_logs = []
     sink_id = logger.add(lambda msg: captured_logs.append(str(msg)), level="INFO")
 
@@ -332,7 +314,6 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
     assert second_call_args[0] == "stock_market.dim_companies_staging"
     assert second_call_args[1].empty
 
-    # Assert logs
     log_content = "".join(captured_logs)
     assert "Starting Gold layer processing" in log_content
     assert "Gold layer processing completed successfully" in log_content

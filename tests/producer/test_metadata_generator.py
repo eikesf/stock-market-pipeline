@@ -14,13 +14,12 @@ class TestMetadataGenerator:
         """
         Test that metadata is successfully retrieved, structured, and saved as a Parquet file.
         """
-        # Mock get_all_tickers to return 10 tickers to trigger the progress logger
+        # Return 10 tickers to trigger the periodic log statements (i % 10 == 0)
         mock_get_all_tickers.return_value = {
             "NASDAQ": ["AAPL", "MSFT", "AMZN", "NVDA", "META", "GOOGL", "TSLA", "AVGO", "PEP"],
             "B3": ["BBSE3.SA"],
         }
 
-        # Mock ticker info data for AAPL and BBSE3.SA
         mock_aapl_info = {
             "shortName": "Apple Inc.",
             "sector": "Technology",
@@ -47,14 +46,13 @@ class TestMetadataGenerator:
             "dividendYield": 0.03,
         }
 
-        # Create mock instances with info attributes
         mock_aapl = MagicMock()
         mock_aapl.info = mock_aapl_info
 
         mock_bbse3 = MagicMock()
         mock_bbse3.info = mock_bbse3_info
 
-        # Bind mock instances to Ticker mock calls
+        # Fallback to returning mock_aapl for the other dummy tickers
         def ticker_side_effect(x):
             if x == "BBSE3.SA":
                 return mock_bbse3
@@ -62,21 +60,16 @@ class TestMetadataGenerator:
 
         mock_ticker.side_effect = ticker_side_effect
 
-        # Intercept the final DataFrame passed to to_parquet
         df_final = None
 
         def get_df(df_self, *args, **kwargs):
             nonlocal df_final
             df_final = df_self
 
-        # Run metadata generator within the parquet patch
         with patch("pandas.DataFrame.to_parquet", get_df):
             run_metadata_generator()
 
-        # Validate that the DataFrame was successfully created
         assert df_final is not None
-
-        # Verify that both tickers are present in the final data
         assert df_final.shape[0] == 10
         assert set(df_final["ticker"]) == {
             "AAPL",
@@ -91,14 +84,12 @@ class TestMetadataGenerator:
             "BBSE3.SA",
         }
 
-        # Assert AAPL values match the mock info
         aapl_row = df_final[df_final["ticker"] == "AAPL"].iloc[0]
         assert aapl_row["short_name"] == "Apple Inc."
         assert aapl_row["sector"] == "Technology"
         assert aapl_row["full_time_employees"] == 160000
         assert aapl_row["market_cap"] == 2600000000000
 
-        # Assert BBSE3.SA values match the mock info
         bbse_row = df_final[df_final["ticker"] == "BBSE3.SA"].iloc[0]
         assert bbse_row["short_name"] == "BB Seguridade Participacoes SA"
         assert bbse_row["sector"] == "Financials"
@@ -109,7 +100,6 @@ class TestMetadataGenerator:
         """
         Test that if retrieval fails for one ticker, the pipeline continues and saves data for the successful ones.
         """
-
         mock_get_all_tickers.return_value = {"NASDAQ": ["AAPL"], "B3": ["BBSE3.SA"]}
 
         mock_aapl = MagicMock()
@@ -147,7 +137,6 @@ class TestMetadataGenerator:
         assert df_final["ticker"].iloc[0] == "AAPL"
         assert "BBSE3.SA" not in df_final["ticker"].values
 
-        # Assert AAPL values match the mock info
         aapl_row = df_final[df_final["ticker"] == "AAPL"].iloc[0]
         assert aapl_row["short_name"] == "Apple Inc."
         assert aapl_row["sector"] == "Technology"
@@ -156,9 +145,8 @@ class TestMetadataGenerator:
 
     def test_run_metadata_generator_empty_tickers(self, mock_to_parquet, mock_ticker, mock_get_all_tickers):
         """
-        Test that if the ticker list is empty, the generator exits cleanly with code 0 without writing any files.
+        Test that if the ticker list is empty, the generator exits cleanly with code 0.
         """
-
         mock_get_all_tickers.return_value = {"NASDAQ": [], "B3": []}
 
         with pytest.raises(SystemExit) as exc_info:
@@ -169,11 +157,9 @@ class TestMetadataGenerator:
 
     def test_run_metadata_generator_all_failures(self, mock_to_parquet, mock_ticker, mock_get_all_tickers):
         """
-        Test that if all tickers fail to fetch metadata, the generator exits cleanly with code 0 without writing any files.
+        Test that if all tickers fail to fetch metadata, the generator exits cleanly with code 0.
         """
-
         mock_get_all_tickers.return_value = {"NASDAQ": ["AAPL"]}
-
         mock_ticker.side_effect = Exception("API offline")
 
         with pytest.raises(SystemExit) as exc_info:
@@ -186,7 +172,6 @@ class TestMetadataGenerator:
         """
         Test that missing API fields are correctly replaced by their default values (e.g. 'N/A' or 0).
         """
-
         mock_get_all_tickers.return_value = {"NASDAQ": ["AAPL"]}
 
         mock_ticker_info = {
@@ -221,9 +206,8 @@ class TestMetadataGenerator:
 
     def test_run_metadata_generator_write_failure(self, mock_to_parquet, mock_ticker, mock_get_all_tickers):
         """
-        Test that a parquet write failure is caught, logged, and causes the program to exit with code 1.
+        Test that a parquet write failure is caught and causes the program to exit with code 1.
         """
-
         mock_get_all_tickers.return_value = {"NASDAQ": ["AAPL"]}
 
         mock_ticker_info = {

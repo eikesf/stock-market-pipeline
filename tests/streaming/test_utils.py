@@ -20,7 +20,6 @@ def test_get_clickhouse_client(mock_get_client):
         "CLICKHOUSE_DB": "test_db",
     }
 
-    # Mock OS environment variables during client creation
     with patch.dict(os.environ, env_vars):
         client = get_clickhouse_client()
 
@@ -37,7 +36,6 @@ def test_read_delta_table():
     mock_spark = MagicMock()
     mock_df = MagicMock()
 
-    # Mock the Spark format and load calls
     mock_spark.read.format.return_value.load.return_value = mock_df
 
     res = read_delta_table(mock_spark, "dummy_path")
@@ -54,7 +52,6 @@ def test_write_delta_table_append():
     mock_df = MagicMock()
     mock_writer = MagicMock()
 
-    # Mock the DataFrame write path
     mock_df.write.format.return_value.mode.return_value = mock_writer
     mock_writer.option.return_value = mock_writer
 
@@ -73,7 +70,6 @@ def test_write_delta_table_overwrite():
     mock_df = MagicMock()
     mock_writer = MagicMock()
 
-    # Mock the DataFrame write path
     mock_df.write.format.return_value.mode.return_value = mock_writer
     mock_writer.option.return_value = mock_writer
 
