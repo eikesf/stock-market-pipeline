@@ -298,6 +298,7 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
     finally:
         logger.remove(sink_id)
 
+    # Check that staging creation and exchange were still executed
     assert mock_client.insert_df.call_count == 2
     first_call_args = mock_client.insert_df.call_args_list[0][0]
     second_call_args = mock_client.insert_df.call_args_list[1][0]
