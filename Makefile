@@ -1,5 +1,6 @@
 # Docker Environment Variables
 COMPOSE_FILE = docker/docker-compose.yml
+export DOCKER_CLI_HINTS=false
 
 .PHONY: up down build shell run run_landing_prices run_landing_metadata \
 		run_bronze_prices run_bronze_metadata run_silver_prices \
