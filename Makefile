@@ -2,7 +2,7 @@
 COMPOSE_FILE = docker/docker-compose.yml
 export DOCKER_CLI_HINTS=false
 
-.PHONY: up down build shell run run_landing_prices run_landing_metadata \
+.PHONY: up down build shell lint lint_fix format test test_cov run run_landing_prices run_landing_metadata \
 		run_bronze_prices run_bronze_metadata run_silver_prices \
 		run_silver_metadata run_gold clean clean_data reset
 
@@ -18,6 +18,22 @@ down: ## Stop and remove the Docker environment
 
 shell: ## Access the Python container bash shell
 	docker exec -it python_finance bash
+
+# --- Quality & Testing ---
+lint: ## Run Ruff linter checks inside the container
+	docker exec python_finance ruff check .
+
+lint_fix: ## Run Ruff linter checks and automatically apply fixes inside the container
+	docker exec python_finance ruff check --fix .
+
+format: ## Run Ruff formatter inside the container
+	docker exec python_finance ruff format .
+
+test: ## Run pytest suite inside the container
+	docker exec python_finance pytest
+
+test_cov: ## Run pytest suite with coverage inside the container
+	docker exec python_finance pytest --cov=src --cov-report=term-missing
 
 # --- Environment Management ---
 clean: ## Stop containers and remove docker volumes (Clickhouse data)

@@ -18,7 +18,6 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-          cache: 'pip'
 
       - name: Set up Java (Required by PySpark)
         uses: actions/setup-java@v5
@@ -26,19 +25,30 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
+      - name: Install uv
+        run: pip install uv
+      
+      - name: Cache uv dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-${{ runner.os }}-
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: uv sync
 
       - name: Run Ruff Linter
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Run Ruff Formatter Check
-        run: ruff format --check .
+        run: uv run ruff format --check .
+
+      - name: Run Mypy
+        run: uv run mypy src/
 
       - name: Run tests and enforce code coverage
-        run: python -m pytest --cov=src --cov-fail-under=80
+        run: uv run pytest --cov=src --cov-report=term-missing --cov-fail-under=80 --tb=short -ra
 
   deploy:
     name: Build & Publish Docker Image

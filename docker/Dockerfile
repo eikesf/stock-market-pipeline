@@ -14,11 +14,14 @@ RUN apt-get update && apt-get install -y \
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 ENV PATH=$JAVA_HOME/bin:$PATH
 
-# Copy requirements file
-COPY requirements.txt /app/requirements.txt
+# Install uv
+RUN pip install uv
+
+# Copy dependency files
+COPY pyproject.toml uv.lock /app/
 
 # Install dependencies
-RUN python3 -m pip install --no-cache-dir -r /app/requirements.txt
+RUN uv pip install --system --no-cache -r /app/pyproject.toml --group dev
 
 # Keep the container running
 CMD ["tail", "-f", "/dev/null"]
