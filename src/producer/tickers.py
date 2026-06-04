@@ -1,5 +1,6 @@
 import functools
 import io
+from typing import Any
 
 import pandas as pd
 import requests
@@ -22,7 +23,7 @@ def _fetch_table(
     """Fetch an HTML page with browser headers and extract a table by id or matching text."""
     html = requests.get(url, headers=_HEADERS, timeout=15).text
 
-    kwargs = {}
+    kwargs: dict[str, Any] = {}
     if table_id:
         kwargs["attrs"] = {"id": table_id}
     if match:
