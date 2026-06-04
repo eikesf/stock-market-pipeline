@@ -35,6 +35,7 @@ services:
     working_dir: /app
     volumes:
       - ../:/app
+      - /app/.venv
       - ../data:/data
     env_file:
       - ../.env

@@ -12,16 +12,16 @@ RUN apt-get update && apt-get install -y \
 
 # Set Java environment variables
 ENV JAVA_HOME=/usr/lib/jvm/default-java
-ENV PATH=$JAVA_HOME/bin:$PATH
+ENV PATH="/app/.venv/bin:$JAVA_HOME/bin:$PATH"
 
 # Install uv
-RUN pip install uv
+RUN pip install uv==0.11.2
 
 # Copy dependency files
 COPY pyproject.toml uv.lock /app/
 
 # Install dependencies
-RUN uv pip install --system --no-cache -r /app/pyproject.toml --group dev
+RUN uv sync --frozen --group dev --no-install-project
 
 # Keep the container running
 CMD ["tail", "-f", "/dev/null"]

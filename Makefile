@@ -33,7 +33,7 @@ test: ## Run pytest suite inside the container
 	docker exec python_finance pytest
 
 test_cov: ## Run pytest suite with coverage inside the container
-	docker exec python_finance pytest --cov=src --cov-report=term-missing
+	docker exec python_finance pytest --cov=src --cov-report=term-missing --cov-fail-under=80
 
 # --- Environment Management ---
 clean: ## Stop containers and remove docker volumes (Clickhouse data)
