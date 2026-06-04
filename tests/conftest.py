@@ -1,6 +1,6 @@
-import os
 import shutil
 import tempfile
+from pathlib import Path
 
 import pytest
 from delta import configure_spark_with_delta_pip
@@ -12,10 +12,10 @@ def spark_session():
     """
     Create a local, reusable Spark Session with Delta support for testing.
     """
-    # Create temp directories for warehouse and derby metastore to keep test execution clean
+
     temp_dir = tempfile.mkdtemp()
-    warehouse_dir = os.path.join(temp_dir, "spark-warehouse")
-    metastore_dir = os.path.join(temp_dir, "metastore_db")
+    warehouse_dir = Path(temp_dir) / "spark-warehouse"
+    metastore_dir = Path(temp_dir) / "metastore_db"
 
     builder = (
         SparkSession.builder.appName("Pipeline Tests")
@@ -33,7 +33,6 @@ def spark_session():
 
     yield spark
 
-    # Tear down session and clean up temp files
     spark.stop()
-    if os.path.exists(temp_dir):
+    if Path(temp_dir).exists():
         shutil.rmtree(temp_dir)

@@ -10,7 +10,7 @@ from src.producer.tickers import _fetch_table, get_all_tickers
 def clear_ticker_cache():
     import src.producer.tickers as tk
 
-    tk._cached_tickers = None
+    tk.get_all_tickers.cache_clear()
 
 
 def mock_requests_get(url, *args, **kwargs):

@@ -178,12 +178,12 @@ def test_gold_clickhouse_interaction_failure(spark_session, tmp_path):
             patch("src.streaming.utils.get_clickhouse_client", return_value=mock_client),
             patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
             patch.object(spark_session, "stop"),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            with pytest.raises(SystemExit) as exc_info:
-                if "src.streaming.gold" in sys.modules:
-                    importlib.reload(sys.modules["src.streaming.gold"])
-                else:
-                    importlib.import_module("src.streaming.gold")
+            if "src.streaming.gold" in sys.modules:
+                importlib.reload(sys.modules["src.streaming.gold"])
+            else:
+                importlib.import_module("src.streaming.gold")
     finally:
         logger.remove(sink_id)
 

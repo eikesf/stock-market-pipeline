@@ -79,12 +79,12 @@ def test_bronze_metadata_empty_landing(spark_session, tmp_path):
         patch("src.producer.config.ARCHIVE_METADATA_DIR", archive_metadata_dir),
         patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
+        pytest.raises(SystemExit) as exc_info,
     ):
-        with pytest.raises(SystemExit) as exc_info:
-            if "src.streaming.bronze_metadata" in sys.modules:
-                importlib.reload(sys.modules["src.streaming.bronze_metadata"])
-            else:
-                importlib.import_module("src.streaming.bronze_metadata")
+        if "src.streaming.bronze_metadata" in sys.modules:
+            importlib.reload(sys.modules["src.streaming.bronze_metadata"])
+        else:
+            importlib.import_module("src.streaming.bronze_metadata")
 
     assert exc_info.value.code == 0
     assert len(list(archive_metadata_dir.glob("*.parquet"))) == 0
@@ -138,12 +138,12 @@ def test_bronze_metadata_processing_failure(spark_session, tmp_path):
             patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
             patch("src.streaming.utils.write_delta_table", side_effect=Exception("Simulated writing failure")),
             patch.object(spark_session, "stop"),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            with pytest.raises(SystemExit) as exc_info:
-                if "src.streaming.bronze_metadata" in sys.modules:
-                    importlib.reload(sys.modules["src.streaming.bronze_metadata"])
-                else:
-                    importlib.import_module("src.streaming.bronze_metadata")
+            if "src.streaming.bronze_metadata" in sys.modules:
+                importlib.reload(sys.modules["src.streaming.bronze_metadata"])
+            else:
+                importlib.import_module("src.streaming.bronze_metadata")
     finally:
         logger.remove(sink_id)
 

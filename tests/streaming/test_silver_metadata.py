@@ -454,12 +454,12 @@ def test_silver_metadata_failure(spark_session, tmp_path):
             patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
             patch("src.streaming.utils.write_delta_table", side_effect=Exception("Simulated writing failure")),
             patch.object(spark_session, "stop"),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            with pytest.raises(SystemExit) as exc_info:
-                if "src.streaming.silver_metadata" in sys.modules:
-                    importlib.reload(sys.modules["src.streaming.silver_metadata"])
-                else:
-                    importlib.import_module("src.streaming.silver_metadata")
+            if "src.streaming.silver_metadata" in sys.modules:
+                importlib.reload(sys.modules["src.streaming.silver_metadata"])
+            else:
+                importlib.import_module("src.streaming.silver_metadata")
     finally:
         logger.remove(sink_id)
 
