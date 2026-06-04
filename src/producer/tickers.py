@@ -1,3 +1,4 @@
+import functools
 import io
 
 import pandas as pd
@@ -35,16 +36,9 @@ def _fetch_table(
     return df[ticker_col].tolist()
 
 
-# Global cache variables
-_cached_tickers = None
-
-
+@functools.cache
 def get_all_tickers() -> dict[str, list[str]]:
     """Fetch B3, NASDAQ, and NYSE tickers dynamically with fallbacks and cache the result."""
-    global _cached_tickers
-    if _cached_tickers is not None:
-        return _cached_tickers
-
     logger.info("Fetching tickers list from external sources...")
 
     # ── NASDAQ-100 ────────────────────────────────────────────────────────────────
@@ -86,13 +80,12 @@ def get_all_tickers() -> dict[str, list[str]]:
     b3_tickers = [f"{t}.SA" for t in _b3_tickers_raw]
 
     # ── Unified dict ──────────────────────────────────────────────────────────────
-    _cached_tickers = {
+    return {
         # Yahoo Finance expects BRK-B instead of BRK.B
         "NASDAQ": [t.replace(".", "-") for t in nasdaq100_tickers],
         "NYSE": [t.replace(".", "-") for t in nyse_tickers],
         "B3": b3_tickers,
     }
-    return _cached_tickers
 
 
 if __name__ == "__main__":

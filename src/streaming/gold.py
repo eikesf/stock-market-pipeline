@@ -1,3 +1,5 @@
+import sys
+
 from pyspark.sql.functions import col
 
 from src.producer.config import SILVER_METADATA_DIR, SILVER_PRICES_DIR
@@ -77,7 +79,7 @@ try:
 
 except Exception as e:
     logger.exception(f"Failed to process Gold layer: {e}")
-    exit(1)
+    sys.exit(1)
 finally:
     # Stopping spark session
     spark.stop()

@@ -1,3 +1,5 @@
+import sys
+
 from pyspark.sql.functions import col, row_number, trim, upper
 from pyspark.sql.window import Window
 
@@ -46,7 +48,7 @@ try:
 
 except Exception as e:
     logger.exception(f"Failed to process Silver layer: {e}")
-    exit(1)
+    sys.exit(1)
 
 finally:
     # Stopping spark session

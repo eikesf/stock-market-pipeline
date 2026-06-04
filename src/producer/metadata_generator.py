@@ -1,3 +1,4 @@
+import sys
 import time
 from datetime import datetime
 
@@ -9,7 +10,8 @@ from src.producer.tickers import get_all_tickers
 from src.utils.logger import logger
 
 
-def run_metadata_generator():
+def run_metadata_generator() -> None:
+    """Extract company metadata from yFinance and persist to the Landing zone."""
     # Grab tickers from the dictionary
     tickers = [ticker for exchange_tickers in get_all_tickers().values() for ticker in exchange_tickers]
 
@@ -51,7 +53,7 @@ def run_metadata_generator():
 
     if not metadata_records:
         logger.warning("No metadata records were successfully retrieved. Exiting.")
-        exit(0)
+        sys.exit(0)
 
     df_metadata = pd.DataFrame(metadata_records)
     metadata_path = LANDING_METADATA_DIR / f"ticker_metadata_{datetime.now().strftime('%Y-%m-%d')}.parquet"
@@ -62,7 +64,7 @@ def run_metadata_generator():
         logger.success(f"✅ Metadata successfully saved to {metadata_path}")
     except Exception:
         logger.opt(exception=True).critical(f"Failed to write parquet file: {metadata_path}")
-        exit(1)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

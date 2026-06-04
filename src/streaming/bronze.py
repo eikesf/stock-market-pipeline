@@ -1,6 +1,5 @@
-import glob
-import os
 import shutil
+import sys
 
 from pyspark.sql.functions import current_timestamp
 
@@ -21,27 +20,27 @@ try:
         )
     except Exception as e:
         logger.warning(f"Failed to read landing stock price data: {e}. Exiting cleanly as folder might be empty.")
-        exit(0)
+        sys.exit(0)
 
     try:
         # Write data to bronze delta table
         write_delta_table(stock_df_raw, BRONZE_PRICES_DIR, mode="append")
 
         # Archiving raw files to archive folder
-        landing_files = glob.glob(str(LANDING_PRICES_DIR / "*.parquet"))
+        landing_files = list(LANDING_PRICES_DIR.glob("*.parquet"))
 
         for f in landing_files:
-            dest_file = ARCHIVE_PRICES_DIR / os.path.basename(f)
+            dest_file = ARCHIVE_PRICES_DIR / f.name
             if dest_file.exists():
-                dest_file.unlink()  # Prevent collision and shutil.move errors on replays
-            shutil.move(f, str(ARCHIVE_PRICES_DIR))
+                dest_file.unlink()
+            shutil.move(str(f), str(ARCHIVE_PRICES_DIR))
 
         logger.info(f"Successfully archived {len(landing_files)} landing files to: {ARCHIVE_PRICES_DIR}")
         logger.success("Bronze (Prices) pipeline completed successfully.")
 
     except Exception as e:
         logger.exception(f"Failed during Bronze prices pipeline execution: {e}")
-        exit(1)
+        sys.exit(1)
 
 finally:
     spark.stop()

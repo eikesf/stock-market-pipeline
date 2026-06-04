@@ -1,3 +1,5 @@
+import sys
+
 import pandas as pd
 import yfinance as yf
 
@@ -6,26 +8,27 @@ from src.producer.tickers import get_all_tickers
 from src.utils.logger import logger
 
 
-def run_generator():
+def run_generator() -> None:
+    """Extract daily stock prices from yFinance and persist to the Landing zone."""
     # Grab all tickers by flattening the dictionary
     tickers = [ticker for exchange_tickers in get_all_tickers().values() for ticker in exchange_tickers]
 
     if not tickers:
         logger.critical("No tickers found to download. Aborting pipeline.")
-        exit(1)
+        sys.exit(1)
 
     try:
         logger.info(f"Downloading data for {len(tickers)} tickers...")
         data = yf.download(tickers=tickers, period="5d", interval="1d", actions=True, auto_adjust=False)
     except Exception:
         logger.opt(exception=True).critical("Failed to download from Yahoo Finance. Aborting pipeline.")
-        exit(1)
+        sys.exit(1)
 
     logger.debug(f"Raw data shape received from yfinance: {data.shape}")
 
     if data.empty:
         logger.warning("No data returned today (possible holiday or weekend). Exiting cleanly.")
-        exit(0)
+        sys.exit(0)
 
     if isinstance(data.columns, pd.MultiIndex):
         logger.debug("MultiIndex columns detected - reshaping with stack()")
@@ -76,7 +79,7 @@ def run_generator():
         )
     except Exception:
         logger.opt(exception=True).critical(f"Failed to write parquet file: {target_file}")
-        exit(1)
+        sys.exit(1)
 
     logger.success(f"Data successfully saved to: {target_file}")
     logger.info(f"Final shape: {tickers_long.shape[0]} rows and {tickers_long.shape[1]} columns.")
