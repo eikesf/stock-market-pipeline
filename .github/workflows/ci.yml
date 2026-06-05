@@ -32,7 +32,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --frozen
 
       - name: Run Ruff Linter
         run: uv run ruff check .
@@ -81,6 +81,7 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
+          target: runtime
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
