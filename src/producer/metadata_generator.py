@@ -1,12 +1,17 @@
-import yfinance as yf
-import pandas as pd
+import sys
 import time
-from src.producer.tickers import get_all_tickers
-from src.producer.config import LANDING_METADATA_DIR
-from src.utils.logger import logger
 from datetime import datetime
 
-def run_metadata_generator():
+import pandas as pd
+import yfinance as yf
+
+from src.producer.config import LANDING_METADATA_DIR
+from src.producer.tickers import get_all_tickers
+from src.utils.logger import logger
+
+
+def run_metadata_generator() -> None:
+    """Extract company metadata from yFinance and persist to the Landing zone."""
     # Grab tickers from the dictionary
     tickers = [ticker for exchange_tickers in get_all_tickers().values() for ticker in exchange_tickers]
 
@@ -19,7 +24,7 @@ def run_metadata_generator():
         try:
             if i % 10 == 0:
                 logger.info(f"Processing {i}/{len(tickers)}...")
-                
+
             # Access Yahoo API for a specific ticker
             stock = yf.Ticker(t)
             info = stock.info
@@ -36,7 +41,7 @@ def run_metadata_generator():
                 "market_cap": info.get("marketCap", 0),
                 "currency": info.get("currency", "N/A"),
                 "dividend_yield": info.get("dividendYield", 0.0),
-                "extraction_date": datetime.now().strftime('%Y-%m-%d')
+                "extraction_date": datetime.now().strftime("%Y-%m-%d"),
             }
 
             metadata_records.append(record)
@@ -48,7 +53,7 @@ def run_metadata_generator():
 
     if not metadata_records:
         logger.warning("No metadata records were successfully retrieved. Exiting.")
-        exit(0)
+        sys.exit(0)
 
     df_metadata = pd.DataFrame(metadata_records)
     metadata_path = LANDING_METADATA_DIR / f"ticker_metadata_{datetime.now().strftime('%Y-%m-%d')}.parquet"
@@ -59,7 +64,8 @@ def run_metadata_generator():
         logger.success(f"✅ Metadata successfully saved to {metadata_path}")
     except Exception:
         logger.opt(exception=True).critical(f"Failed to write parquet file: {metadata_path}")
-        exit(1)
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     run_metadata_generator()

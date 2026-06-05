@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+
 from loguru import logger
 
 # Make sure the logs folder exists dynamically
@@ -14,7 +15,7 @@ logger.remove(0)
 logger.add(
     sys.stdout,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-    level="INFO"
+    level="INFO",
 )
 
 # Log file settings (DEBUG level)
@@ -24,5 +25,5 @@ logger.add(
     retention="10 days",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
     level="DEBUG",
-    encoding="utf-8"
+    encoding="utf-8",
 )

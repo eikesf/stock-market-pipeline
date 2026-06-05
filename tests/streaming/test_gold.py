@@ -1,259 +1,300 @@
-import pytest
-import sys
 import importlib
+import sys
+from unittest.mock import MagicMock, patch
+
 import pandas as pd
-from unittest.mock import patch, MagicMock
+import pytest
 from loguru import logger
-from pyspark.sql.types import StructType, StructField, StringType, DateType, DecimalType, LongType, TimestampType, IntegerType
+from pyspark.sql.types import (
+    DateType,
+    DecimalType,
+    IntegerType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
+
 
 def test_gold_load_success(spark_session, tmp_path):
     """
     Test successful Gold layer pipeline execution and ClickHouse integrations.
     """
-    # Set up isolated temporary directories
+
     silver_prices_dir = tmp_path / "silver_prices"
     silver_prices_dir.mkdir(parents=True, exist_ok=True)
 
     silver_metadata_dir = tmp_path / "silver_metadata"
     silver_metadata_dir.mkdir(parents=True, exist_ok=True)
 
-    # Input data
-    df_prices = pd.DataFrame({
-        "date": ["2026-05-28"],
-        "ticker": ["AAPL"],
-        "open": [170.5],
-        "high": [172.5],
-        "low": [168.5],
-        "close": [171.5],
-        "adj_close": [171.5],
-        "volume": [10000],
-        "dividends": [0.5],
-        "stock_splits": [0.0],
-        "ingestion_timestamp": ["2026-05-28 10:00:00"]
-    })
+    df_prices = pd.DataFrame(
+        {
+            "date": ["2026-05-28"],
+            "ticker": ["AAPL"],
+            "open": [170.5],
+            "high": [172.5],
+            "low": [168.5],
+            "close": [171.5],
+            "adj_close": [171.5],
+            "volume": [10000],
+            "dividends": [0.5],
+            "stock_splits": [0.0],
+            "ingestion_timestamp": ["2026-05-28 10:00:00"],
+        }
+    )
 
-    df_metadata = pd.DataFrame({
-        "ticker": ["AAPL"],
-        "short_name": ["Apple Inc."],
-        "sector": ["Technology"],
-        "industry": ["Electronics"],
-        "country": ["USA"],
-        "isin": ["US0378331005"],
-        "full_time_employees": [160000],
-        "exchange": ["NASDAQ"],
-        "market_cap": [2600000000000],
-        "currency": ["USD"],
-        "dividend_yield": [0.005],
-        "extraction_date": ["2026-05-28"],
-        "ingestion_timestamp": ["2026-05-28 10:00:00"]
-    })
+    df_metadata = pd.DataFrame(
+        {
+            "ticker": ["AAPL"],
+            "short_name": ["Apple Inc."],
+            "sector": ["Technology"],
+            "industry": ["Electronics"],
+            "country": ["USA"],
+            "isin": ["US0378331005"],
+            "full_time_employees": [160000],
+            "exchange": ["NASDAQ"],
+            "market_cap": [2600000000000],
+            "currency": ["USD"],
+            "dividend_yield": [0.005],
+            "extraction_date": ["2026-05-28"],
+            "ingestion_timestamp": ["2026-05-28 10:00:00"],
+        }
+    )
 
-    # Write as Delta tables
     spark_session.createDataFrame(df_prices).write.format("delta").mode("overwrite").save(str(silver_prices_dir))
     spark_session.createDataFrame(df_metadata).write.format("delta").mode("overwrite").save(str(silver_metadata_dir))
 
-    # Mock ClickHouse client
     mock_client = MagicMock()
 
-    # Capture log messages
     captured_logs = []
     sink_id = logger.add(lambda msg: captured_logs.append(str(msg)), level="INFO")
 
     try:
-        with patch("src.producer.config.SILVER_PRICES_DIR", silver_prices_dir), \
-             patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir), \
-             patch("src.streaming.utils.get_clickhouse_client", return_value=mock_client), \
-             patch("src.streaming.spark_session.create_spark_session", return_value=spark_session), \
-             patch.object(spark_session, "stop"):
-
+        with (
+            patch("src.producer.config.SILVER_PRICES_DIR", silver_prices_dir),
+            patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.utils.get_clickhouse_client", return_value=mock_client),
+            patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
+            patch.object(spark_session, "stop"),
+        ):
             if "src.streaming.gold" in sys.modules:
                 importlib.reload(sys.modules["src.streaming.gold"])
             else:
-                import src.streaming.gold
+                importlib.import_module("src.streaming.gold")
     finally:
         logger.remove(sink_id)
 
-    # Assert ClickHouse interactions
-    # 1. Staging tables are created
-    mock_client.command.assert_any_call("CREATE TABLE IF NOT EXISTS stock_market.fact_prices_staging AS stock_market.fact_prices")
-    mock_client.command.assert_any_call("CREATE TABLE IF NOT EXISTS stock_market.dim_companies_staging AS stock_market.dim_companies")
+    mock_client.command.assert_any_call(
+        "CREATE TABLE IF NOT EXISTS stock_market.fact_prices_staging AS stock_market.fact_prices"
+    )
+    mock_client.command.assert_any_call(
+        "CREATE TABLE IF NOT EXISTS stock_market.dim_companies_staging AS stock_market.dim_companies"
+    )
 
-    # 2. Staging tables are truncated
     mock_client.command.assert_any_call("TRUNCATE TABLE stock_market.fact_prices_staging")
     mock_client.command.assert_any_call("TRUNCATE TABLE stock_market.dim_companies_staging")
 
-    # 3. Data is inserted
     assert mock_client.insert_df.call_count == 2
     first_call_args = mock_client.insert_df.call_args_list[0][0]
     second_call_args = mock_client.insert_df.call_args_list[1][0]
-    
+
     assert first_call_args[0] == "stock_market.fact_prices_staging"
     assert isinstance(first_call_args[1], pd.DataFrame)
-    
+
     assert second_call_args[0] == "stock_market.dim_companies_staging"
     assert isinstance(second_call_args[1], pd.DataFrame)
 
-    # 4. Atomic exchanges are executed
     mock_client.command.assert_any_call("EXCHANGE TABLES stock_market.fact_prices AND stock_market.fact_prices_staging")
-    mock_client.command.assert_any_call("EXCHANGE TABLES stock_market.dim_companies AND stock_market.dim_companies_staging")
+    mock_client.command.assert_any_call(
+        "EXCHANGE TABLES stock_market.dim_companies AND stock_market.dim_companies_staging"
+    )
 
-    # 5. Staging tables are dropped
     mock_client.command.assert_any_call("DROP TABLE IF EXISTS stock_market.fact_prices_staging")
     mock_client.command.assert_any_call("DROP TABLE IF EXISTS stock_market.dim_companies_staging")
 
-    # Assert logs
     log_content = "".join(captured_logs)
     assert "Starting Gold layer processing" in log_content
     assert "Gold layer processing completed successfully" in log_content
+
 
 def test_gold_clickhouse_interaction_failure(spark_session, tmp_path):
     """
     Test Gold pipeline exit code 1 when ClickHouse query or insertion fails.
     """
-    # Set up isolated temporary directories
     silver_prices_dir = tmp_path / "silver_prices"
     silver_prices_dir.mkdir(parents=True, exist_ok=True)
 
     silver_metadata_dir = tmp_path / "silver_metadata"
     silver_metadata_dir.mkdir(parents=True, exist_ok=True)
 
-    # Input data
-    df_prices = pd.DataFrame({
-        "date": ["2026-05-28"],
-        "ticker": ["AAPL"],
-        "open": [170.5],
-        "high": [172.5],
-        "low": [168.5],
-        "close": [171.5],
-        "adj_close": [171.5],
-        "volume": [10000],
-        "dividends": [0.5],
-        "stock_splits": [0.0],
-        "ingestion_timestamp": ["2026-05-28 10:00:00"]
-    })
+    df_prices = pd.DataFrame(
+        {
+            "date": ["2026-05-28"],
+            "ticker": ["AAPL"],
+            "open": [170.5],
+            "high": [172.5],
+            "low": [168.5],
+            "close": [171.5],
+            "adj_close": [171.5],
+            "volume": [10000],
+            "dividends": [0.5],
+            "stock_splits": [0.0],
+            "ingestion_timestamp": ["2026-05-28 10:00:00"],
+        }
+    )
 
-    df_metadata = pd.DataFrame({
-        "ticker": ["AAPL"],
-        "short_name": ["Apple Inc."],
-        "sector": ["Technology"],
-        "industry": ["Electronics"],
-        "country": ["USA"],
-        "isin": ["US0378331005"],
-        "full_time_employees": [160000],
-        "exchange": ["NASDAQ"],
-        "market_cap": [2600000000000],
-        "currency": ["USD"],
-        "dividend_yield": [0.005],
-        "extraction_date": ["2026-05-28"],
-        "ingestion_timestamp": ["2026-05-28 10:00:00"]
-    })
+    df_metadata = pd.DataFrame(
+        {
+            "ticker": ["AAPL"],
+            "short_name": ["Apple Inc."],
+            "sector": ["Technology"],
+            "industry": ["Electronics"],
+            "country": ["USA"],
+            "isin": ["US0378331005"],
+            "full_time_employees": [160000],
+            "exchange": ["NASDAQ"],
+            "market_cap": [2600000000000],
+            "currency": ["USD"],
+            "dividend_yield": [0.005],
+            "extraction_date": ["2026-05-28"],
+            "ingestion_timestamp": ["2026-05-28 10:00:00"],
+        }
+    )
 
-    # Write as Delta tables
     spark_session.createDataFrame(df_prices).write.format("delta").mode("overwrite").save(str(silver_prices_dir))
     spark_session.createDataFrame(df_metadata).write.format("delta").mode("overwrite").save(str(silver_metadata_dir))
 
-    # Mock ClickHouse client to raise an exception on command call
     mock_client = MagicMock()
     mock_client.command.side_effect = Exception("Simulated ClickHouse connection failure")
 
-    # Capture log messages
     captured_logs = []
     sink_id = logger.add(lambda msg: captured_logs.append(str(msg)), level="ERROR")
 
     try:
-        with patch("src.producer.config.SILVER_PRICES_DIR", silver_prices_dir), \
-             patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir), \
-             patch("src.streaming.utils.get_clickhouse_client", return_value=mock_client), \
-             patch("src.streaming.spark_session.create_spark_session", return_value=spark_session), \
-             patch.object(spark_session, "stop"):
-
-            with pytest.raises(SystemExit) as exc_info:
-                if "src.streaming.gold" in sys.modules:
-                    importlib.reload(sys.modules["src.streaming.gold"])
-                else:
-                    import src.streaming.gold
+        with (
+            patch("src.producer.config.SILVER_PRICES_DIR", silver_prices_dir),
+            patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.utils.get_clickhouse_client", return_value=mock_client),
+            patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
+            patch.object(spark_session, "stop"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            if "src.streaming.gold" in sys.modules:
+                importlib.reload(sys.modules["src.streaming.gold"])
+            else:
+                importlib.import_module("src.streaming.gold")
     finally:
         logger.remove(sink_id)
 
-    # Check failure code
     assert exc_info.value.code == 1
 
-    # Verify that the exception is logged to our loguru sink
     log_content = "".join(captured_logs)
     assert "Failed to process Gold layer" in log_content
     assert "Simulated ClickHouse connection failure" in log_content
+
 
 def test_gold_empty_silver_data(spark_session, tmp_path):
     """
     Test Gold pipeline execution when Silver input dataset is empty.
     """
-    # Set up isolated temporary directories
     silver_prices_dir = tmp_path / "silver_prices"
     silver_prices_dir.mkdir(parents=True, exist_ok=True)
 
     silver_metadata_dir = tmp_path / "silver_metadata"
     silver_metadata_dir.mkdir(parents=True, exist_ok=True)
 
-    # Empty DataFrames with the correct schemas
-    df_prices = pd.DataFrame(columns=[
-        "date", "ticker", "open", "high", "low", "close", "adj_close", "volume", "dividends", "stock_splits", "ingestion_timestamp"
-    ])
-    df_metadata = pd.DataFrame(columns=[
-        "ticker", "short_name", "sector", "industry", "country", "isin", "full_time_employees", "exchange", "market_cap", "currency", "dividend_yield", "extraction_date", "ingestion_timestamp"
-    ])
+    df_prices = pd.DataFrame(
+        columns=[
+            "date",
+            "ticker",
+            "open",
+            "high",
+            "low",
+            "close",
+            "adj_close",
+            "volume",
+            "dividends",
+            "stock_splits",
+            "ingestion_timestamp",
+        ]
+    )
+    df_metadata = pd.DataFrame(
+        columns=[
+            "ticker",
+            "short_name",
+            "sector",
+            "industry",
+            "country",
+            "isin",
+            "full_time_employees",
+            "exchange",
+            "market_cap",
+            "currency",
+            "dividend_yield",
+            "extraction_date",
+            "ingestion_timestamp",
+        ]
+    )
 
-    # Convert to spark and write to Delta
-    prices_schema = StructType([
-        StructField("date", DateType(), True),
-        StructField("ticker", StringType(), True),
-        StructField("open", DecimalType(10, 2), True),
-        StructField("high", DecimalType(10, 2), True),
-        StructField("low", DecimalType(10, 2), True),
-        StructField("close", DecimalType(10, 2), True),
-        StructField("adj_close", DecimalType(10, 2), True),
-        StructField("volume", LongType(), True),
-        StructField("dividends", DecimalType(10, 2), True),
-        StructField("stock_splits", DecimalType(10, 4), True),
-        StructField("ingestion_timestamp", TimestampType(), True)
-    ])
-    
-    metadata_schema = StructType([
-        StructField("ticker", StringType(), True),
-        StructField("short_name", StringType(), True),
-        StructField("sector", StringType(), True),
-        StructField("industry", StringType(), True),
-        StructField("country", StringType(), True),
-        StructField("isin", StringType(), True),
-        StructField("full_time_employees", IntegerType(), True),
-        StructField("exchange", StringType(), True),
-        StructField("market_cap", LongType(), True),
-        StructField("currency", StringType(), True),
-        StructField("dividend_yield", DecimalType(10, 2), True),
-        StructField("extraction_date", DateType(), True),
-        StructField("ingestion_timestamp", TimestampType(), True)
-    ])
+    prices_schema = StructType(
+        [
+            StructField("date", DateType(), True),
+            StructField("ticker", StringType(), True),
+            StructField("open", DecimalType(10, 2), True),
+            StructField("high", DecimalType(10, 2), True),
+            StructField("low", DecimalType(10, 2), True),
+            StructField("close", DecimalType(10, 2), True),
+            StructField("adj_close", DecimalType(10, 2), True),
+            StructField("volume", LongType(), True),
+            StructField("dividends", DecimalType(10, 2), True),
+            StructField("stock_splits", DecimalType(10, 4), True),
+            StructField("ingestion_timestamp", TimestampType(), True),
+        ]
+    )
 
-    spark_session.createDataFrame(df_prices, schema=prices_schema).write.format("delta").mode("overwrite").save(str(silver_prices_dir))
-    spark_session.createDataFrame(df_metadata, schema=metadata_schema).write.format("delta").mode("overwrite").save(str(silver_metadata_dir))
+    metadata_schema = StructType(
+        [
+            StructField("ticker", StringType(), True),
+            StructField("short_name", StringType(), True),
+            StructField("sector", StringType(), True),
+            StructField("industry", StringType(), True),
+            StructField("country", StringType(), True),
+            StructField("isin", StringType(), True),
+            StructField("full_time_employees", IntegerType(), True),
+            StructField("exchange", StringType(), True),
+            StructField("market_cap", LongType(), True),
+            StructField("currency", StringType(), True),
+            StructField("dividend_yield", DecimalType(10, 2), True),
+            StructField("extraction_date", DateType(), True),
+            StructField("ingestion_timestamp", TimestampType(), True),
+        ]
+    )
 
-    # Mock ClickHouse client
+    spark_session.createDataFrame(df_prices, schema=prices_schema).write.format("delta").mode("overwrite").save(
+        str(silver_prices_dir)
+    )
+    spark_session.createDataFrame(df_metadata, schema=metadata_schema).write.format("delta").mode("overwrite").save(
+        str(silver_metadata_dir)
+    )
+
     mock_client = MagicMock()
 
-    # Capture log messages
     captured_logs = []
     sink_id = logger.add(lambda msg: captured_logs.append(str(msg)), level="INFO")
 
     try:
-        with patch("src.producer.config.SILVER_PRICES_DIR", silver_prices_dir), \
-             patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir), \
-             patch("src.streaming.utils.get_clickhouse_client", return_value=mock_client), \
-             patch("src.streaming.spark_session.create_spark_session", return_value=spark_session), \
-             patch.object(spark_session, "stop"):
-
+        with (
+            patch("src.producer.config.SILVER_PRICES_DIR", silver_prices_dir),
+            patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.utils.get_clickhouse_client", return_value=mock_client),
+            patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
+            patch.object(spark_session, "stop"),
+        ):
             if "src.streaming.gold" in sys.modules:
                 importlib.reload(sys.modules["src.streaming.gold"])
             else:
-                import src.streaming.gold
+                importlib.import_module("src.streaming.gold")
     finally:
         logger.remove(sink_id)
 
@@ -261,14 +302,13 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
     assert mock_client.insert_df.call_count == 2
     first_call_args = mock_client.insert_df.call_args_list[0][0]
     second_call_args = mock_client.insert_df.call_args_list[1][0]
-    
+
     assert first_call_args[0] == "stock_market.fact_prices_staging"
     assert first_call_args[1].empty
-    
+
     assert second_call_args[0] == "stock_market.dim_companies_staging"
     assert second_call_args[1].empty
 
-    # Assert logs
     log_content = "".join(captured_logs)
     assert "Starting Gold layer processing" in log_content
     assert "Gold layer processing completed successfully" in log_content

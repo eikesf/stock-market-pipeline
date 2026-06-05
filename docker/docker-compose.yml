@@ -30,11 +30,13 @@ services:
     build:
       context: ../
       dockerfile: docker/Dockerfile
+      target: builder
     container_name: python_finance
     restart: unless-stopped
     working_dir: /app
     volumes:
       - ../:/app
+      - /app/.venv
       - ../data:/data
     env_file:
       - ../.env
