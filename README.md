@@ -5,6 +5,7 @@
 ![Delta Lake](https://img.shields.io/badge/Delta_Lake-4.2.0-00AAD2?style=flat-square)
 ![ClickHouse](https://img.shields.io/badge/ClickHouse-25.8_LTS-FFCC01?style=flat-square&logo=clickhouse&logoColor=black)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)
+![CI/CD](https://github.com/eikesf/stock-market-pipeline/actions/workflows/ci.yml/badge.svg)
 
 An end-to-end Data Engineering platform that ingests financial asset data and metadata from **B3, NASDAQ, and NYSE**, processes it through a **Medallion Architecture** (Landing → Bronze → Silver → Gold) using PySpark and Delta Lake, and delivers analytics-ready data via ClickHouse in a **Star Schema**.
 
@@ -16,8 +17,10 @@ Each pipeline is exposed as an isolated `make` command, allowing granular execut
 3. [Project Structure](#project-structure)
 4. [Getting Started](#getting-started)
 5. [Executing the Pipelines](#executing-the-pipelines)
-6. [ClickHouse Analytics Star Schema](#clickhouse-analytics-star-schema)
-7. [Roadmap & Future Improvements](#roadmap--future-improvements)
+6. [Running the Tests](#running-the-tests)
+7. [ClickHouse Analytics Star Schema](#clickhouse-analytics-star-schema)
+8. [CI/CD Pipeline](#cicd-pipeline)
+9. [Roadmap & Future Improvements](#roadmap--future-improvements)
 
 ---
 
@@ -87,9 +90,13 @@ graph LR
 
 ```text
 stock_market_pipeline/
+├── .github/
+│   └── workflows/
+│       └── ci.yml           # CI/CD GitHub Actions workflow
 ├── .env.example             # Environment variables template
 ├── Makefile                 # CLI task runner
-├── requirements.txt         # Python dependencies (PySpark, Delta, Clickhouse)
+├── pyproject.toml           # Unified Python config and dependencies (PEP 621/735)
+├── uv.lock                  # Dependency lockfile (fully resolved)
 ├── data/                    # Shared data volume (created at runtime)
 │   ├── bronze/              # Delta Bronze layer (prices/ & metadata/)
 │   ├── landing/             # Raw extractions (prices/ & metadata/)
@@ -97,21 +104,27 @@ stock_market_pipeline/
 ├── docker/
 │   ├── Dockerfile           # Python 3.13 + Java 21 image
 │   └── docker-compose.yml   # ClickHouse server + Python Spark executor
-└── src/
-    ├── db_init/init.sql     # ClickHouse DDL (auto-run on first boot)
-    ├── producer/            # Landing layer (extraction)
-    │   ├── config.py        # Configs and path mappings
-    │   ├── generator.py     # Pipeline A: prices extractor
-    │   ├── metadata_generator.py # Pipeline B: metadata extractor
-    │   └── tickers.py       # Monitored tickers (NASDAQ, B3, NYSE)
-    └── streaming/           # Medallion layers (Spark/Delta/ClickHouse)
-        ├── spark_session.py # SparkSession factory
-        ├── utils.py         # Shared IO utilities (Delta read/write & ClickHouse)
-        ├── bronze.py        # Bronze: prices ingestion
-        ├── silver.py        # Silver: prices deduplication
-        ├── bronze_metadata.py # Bronze: metadata ingestion
-        ├── silver_metadata.py # Silver: metadata deduplication
-        └── gold.py          # Gold: ClickHouse writer
+├── src/
+│   ├── db_init/init.sql     # ClickHouse DDL (auto-run on first boot)
+│   ├── producer/            # Landing layer (extraction)
+│   │   ├── config.py        # Configs and path mappings
+│   │   ├── generator.py     # Pipeline A: prices extractor
+│   │   ├── metadata_generator.py # Pipeline B: metadata extractor
+│   │   └── tickers.py       # Monitored tickers (NASDAQ, B3, NYSE)
+│   ├── streaming/           # Medallion layers (Spark/Delta/ClickHouse)
+│   │   ├── spark_session.py # SparkSession factory
+│   │   ├── utils.py         # Shared IO utilities (Delta read/write & ClickHouse)
+│   │   ├── bronze.py        # Bronze: prices ingestion
+│   │   ├── silver.py        # Silver: prices deduplication
+│   │   ├── bronze_metadata.py # Bronze: metadata ingestion
+│   │   ├── silver_metadata.py # Silver: metadata deduplication
+│   │   └── gold.py          # Gold: ClickHouse writer
+│   └── utils/
+│       └── logger.py        # Centralized Loguru logger configuration
+└── tests/                   # Pytest suite
+    ├── conftest.py          # PySpark and local delta test fixtures
+    ├── producer/            # Tests for generator and ticker fetcher
+    └── streaming/           # Medallion layer and ClickHouse integration tests
 ```
 
 ---
@@ -153,7 +166,32 @@ This starts two containers:
 - `stock_clickhouse`: ClickHouse server on HTTP port `8123` and native TCP port `9000`. Runs `src/db_init/init.sql` automatically on first boot.
 - `python_finance`: Isolated workspace with Python 3.13, Java 21, and all pipeline dependencies.
 
-### 3 — Tear down the environment
+### 3 — Code Quality
+
+This project uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting, 
+configured in `pyproject.toml`.
+
+**Line length:** 120 characters, enforced by `ruff format`. `E501` is disabled in 
+the linter to avoid duplicate reporting.
+
+To run checks inside the container:
+```bash
+make lint       # Check for style/lint issues
+make lint_fix   # Check and apply auto-fixes for safe violations
+make format     # Format files according to style guidelines
+```
+
+Or locally (outside the container, using uv):
+```bash
+uv run ruff check .          # linter
+uv run ruff format --check . # verify formatting without applying changes
+uv run ruff format .         # apply formatting
+```
+
+The CI pipeline runs both checks automatically on every push and pull request.
+
+
+### 4 — Tear down the environment
 
 ```bash
 make down # Stop and remove containers (data is preserved)
@@ -169,7 +207,9 @@ make reset # Full reset: clean + remove local data/ directory
 Triggers the entire workflow sequentially (Landing → Bronze → Silver → Gold):
 
 ```bash
-make run
+make run          # Run the full pipeline (both prices and metadata) for local testing
+make run_prices   # Run only the Prices pipeline (Daily)
+make run_metadata # Run only the Metadata pipeline (Monthly)
 ```
 
 ### Run Layer-Specific Commands
@@ -200,6 +240,36 @@ make run_silver_metadata    # Deduplicate metadata -> Delta Silver
 ```bash
 make run_gold               # Load Silver data into ClickHouse
 ```
+
+---
+
+## Running the Tests
+
+The project includes a robust test suite with 42 unit and integration tests using 
+`pytest` and `unittest.mock` to validate data quality, pipeline flows, exchange 
+standardization, Spark deduplications, and ClickHouse transactional safety without 
+requiring live database connections.
+
+### Running inside the container
+```bash
+make test
+```
+Or directly:
+```bash
+docker exec python_finance pytest
+```
+
+### Running with coverage report
+```bash
+make test_cov
+```
+Or directly:
+```bash
+docker exec python_finance pytest --cov=src --cov-report=term-missing --cov-fail-under=80
+```
+
+The CI enforces a minimum coverage threshold of **80%**. Test configuration is 
+defined in `pyproject.toml` under `[tool.pytest.ini_options]`.
 
 ---
 
@@ -268,7 +338,31 @@ ORDER BY
 
 ---
 
+## CI/CD Pipeline
+
+The project includes a GitHub Actions pipeline with two sequential jobs:
+
+**`lint-and-test`** — runs on every push and pull request to `main` and `develop`:
+- Ruff linter and formatter check
+- Mypy strict type checking across `src/`
+- pytest with 80% coverage enforcement
+
+**`deploy`** — runs only on push to `main`, after `lint-and-test` passes:
+- Builds the Docker image from `docker/Dockerfile`
+- Pushes to GitHub Container Registry (GHCR) with two tags:
+  - `latest` — always points to the most recent `main` build
+  - `sha-<commit>` — immutable tag for full traceability
+
+```bash
+# Pull the latest published image
+docker pull ghcr.io/eikesf/stock-market-pipeline:latest
+```
+
+---
+
 ## Roadmap & Future Improvements
 - **Orchestration:** Implement Apache Airflow DAGs to replace `make` command execution.
 - **Data Quality:** Integrate Great Expectations or Soda for automated data quality assertions in the Silver layer.
-- **CI/CD:** Add GitHub Actions workflows for linting (Ruff/Flake8) and automated Docker image builds.
+- **Type Safety:** Achieve full Mypy strict compliance across the `src/` module.
+- **Observability:** Add structured logging with correlation IDs per pipeline run.
+

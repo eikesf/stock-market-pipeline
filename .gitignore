@@ -5,7 +5,12 @@
 # Python
 __pycache__/
 *.py[cod]
+.mypy_cache/
 .pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 # Virtual environments
 venv/

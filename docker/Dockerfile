@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.13-slim AS base
 
 WORKDIR /app
 
@@ -12,13 +12,26 @@ RUN apt-get update && apt-get install -y \
 
 # Set Java environment variables
 ENV JAVA_HOME=/usr/lib/jvm/default-java
-ENV PATH=$JAVA_HOME/bin:$PATH
+ENV PATH="/app/.venv/bin:$JAVA_HOME/bin:$PATH"
 
-# Copy requirements file
-COPY requirements.txt /app/requirements.txt
+# Install uv
+RUN pip install uv==0.11.19
 
-# Install dependencies
-RUN python3 -m pip install --no-cache-dir -r /app/requirements.txt
+# Copy dependency files
+COPY pyproject.toml uv.lock /app/
+
+# Builder - install all deps including dev (for CI/testing)
+FROM base as builder
+
+RUN uv sync --frozen --group dev --no-install-project
+
+# Runtime - lean production image, no test/lint tooling
+FROM base as runtime
+
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Copy source code
+COPY src/ /app/src/
 
 # Keep the container running
 CMD ["tail", "-f", "/dev/null"]
