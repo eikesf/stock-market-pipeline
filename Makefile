@@ -2,7 +2,7 @@
 COMPOSE_FILE = docker/docker-compose.yml
 export DOCKER_CLI_HINTS=false
 
-.PHONY: up down build shell lint lint_fix format test test_cov run run_landing_prices run_landing_metadata \
+.PHONY: up down build shell lint lint_fix format test test_cov run run_prices run_metadata _prices_flow _metadata_flow run_landing_prices run_landing_metadata \
 		run_bronze_prices run_bronze_metadata run_silver_prices \
 		run_silver_metadata run_gold clean clean_data reset
 
@@ -45,19 +45,24 @@ clean_data: ## Remove the local data directory (landing/, bronze/, silver/)
 reset: clean clean_data ## Full reset: remove containers, volumes, and local data	
 
 # --- Pipeline Execution ---
-run: ## Run the full Medallion pipeline (Landing -> Bronze -> Silver -> Gold)
-	@echo "--- 1. Landing: Extraction ---"
+_prices_flow:
+	@echo "--- Ingestion & Processing: Prices ---"
 	@$(MAKE) run_landing_prices
-	@$(MAKE) run_landing_metadata
-	@echo "\n--- 2. Bronze: Raw Ingestion ---"
 	@$(MAKE) run_bronze_prices
-	@$(MAKE) run_bronze_metadata
-	@echo "\n--- 3. Silver: Cleaning and Deduplication ---"
 	@$(MAKE) run_silver_prices
+
+_metadata_flow:
+	@echo "--- Ingestion & Processing: Metadata ---"
+	@$(MAKE) run_landing_metadata
+	@$(MAKE) run_bronze_metadata
 	@$(MAKE) run_silver_metadata
-	@echo "\n--- 4. Gold: Loading into ClickHouse ---"
-	@$(MAKE) run_gold
-	@echo "\nPipeline completed successfully."
+
+run_prices: _prices_flow run_gold ## Run only Prices pipeline
+
+run_metadata: _metadata_flow run_gold ## Run only Metadata pipeline
+
+run: _prices_flow _metadata_flow run_gold ## Run the full Medallion pipeline
+	@echo "\nFull pipeline completed successfully."
 
 run_landing_prices: ## Run only Landing layer for prices
 	@docker exec -it python_finance python -m src.producer.generator
