@@ -181,11 +181,11 @@ make lint_fix   # Check and apply auto-fixes for safe violations
 make format     # Format files according to style guidelines
 ```
 
-Or locally (outside the container):
+Or locally (outside the container, using uv):
 ```bash
-ruff check .          # linter
-ruff format --check . # verify formatting without applying changes
-ruff format .         # apply formatting
+uv run ruff check .          # linter
+uv run ruff format --check . # verify formatting without applying changes
+uv run ruff format .         # apply formatting
 ```
 
 The CI pipeline runs both checks automatically on every push and pull request.
@@ -207,7 +207,9 @@ make reset # Full reset: clean + remove local data/ directory
 Triggers the entire workflow sequentially (Landing → Bronze → Silver → Gold):
 
 ```bash
-make run
+make run          # Run the full pipeline (both prices and metadata) for local testing
+make run_prices   # Run only the Prices pipeline (Daily)
+make run_metadata # Run only the Metadata pipeline (Monthly)
 ```
 
 ### Run Layer-Specific Commands
@@ -263,7 +265,7 @@ make test_cov
 ```
 Or directly:
 ```bash
-docker exec python_finance pytest --cov=src --cov-report=term-missing
+docker exec python_finance pytest --cov=src --cov-report=term-missing --cov-fail-under=80
 ```
 
 The CI enforces a minimum coverage threshold of **80%**. Test configuration is 
