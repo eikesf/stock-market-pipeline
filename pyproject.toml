@@ -15,6 +15,10 @@ dependencies = [
     "requests==2.34.2",
     "pyarrow==24.0.0",
     "loguru==0.7.3",
+    "apache-airflow==3.2.2",
+    "psycopg2-binary>=2.9.12",
+    "apache-airflow-providers-postgres>=6.7.1",
+    "apache-airflow-providers-fab>=3.6.5",
 ]
 
 [dependency-groups]
@@ -64,6 +68,7 @@ select = [
     "PD",     # pandas-vet (Pandas best practices)
     "T10",    # flake8-debugger (Catches left-over debugger imports)
     "T20",    # flake8-print (Bans print/pprint in production)
+    "AIR",    # Ruff Airflow rules (AIR prefix)
 ]
 ignore = [
     "E501",   # Line too long (handled automatically by the formatter)

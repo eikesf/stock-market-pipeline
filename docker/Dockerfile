@@ -21,12 +21,12 @@ RUN pip install uv==0.11.19
 COPY pyproject.toml uv.lock /app/
 
 # Builder - install all deps including dev (for CI/testing)
-FROM base as builder
+FROM base AS builder
 
 RUN uv sync --frozen --group dev --no-install-project
 
 # Runtime - lean production image, no test/lint tooling
-FROM base as runtime
+FROM base AS runtime
 
 RUN uv sync --frozen --no-dev --no-install-project
 

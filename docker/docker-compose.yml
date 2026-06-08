@@ -2,6 +2,143 @@ name: stock_market_pipeline
 
 services:
 
+  airflow_postgres:
+    image: postgres:18-alpine
+    container_name: airflow_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${AIRFLOW_DB_USER}
+      - POSTGRES_PASSWORD=${AIRFLOW_DB_PASSWORD}
+      - POSTGRES_DB=${AIRFLOW_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks:
+      - stream-network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow_init:
+    image: stock-pipeline:latest
+    container_name: airflow_init
+    volumes:
+      - ../airflow/dags:/opt/airflow/dags
+      - ../airflow/config:/opt/airflow/config
+      - ../airflow/logs:/opt/airflow/logs
+      - ../src:/opt/airflow/dags/src
+      - ../.env:/opt/airflow/.env
+    env_file:
+      - ../.env
+    environment:
+      - AIRFLOW_HOME=/opt/airflow
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow_postgres:5432/${AIRFLOW_DB}
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    depends_on:
+      airflow_postgres:
+        condition: service_healthy
+    networks:
+      - stream-network
+    command: bash -c "airflow db migrate && airflow users create --username $${AIRFLOW_ADMIN_USER} --firstname $${AIRFLOW_ADMIN_FIRSTNAME} --lastname $${AIRFLOW_ADMIN_LASTNAME} --role Admin --email $${AIRFLOW_ADMIN_EMAIL} --password $${AIRFLOW_ADMIN_PASSWORD}"
+
+  airflow_apiserver:
+    image: stock-pipeline:latest
+    container_name: airflow_apiserver
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../airflow/dags:/opt/airflow/dags
+      - ../airflow/config:/opt/airflow/config
+      - ../airflow/logs:/opt/airflow/logs
+      - ../src:/opt/airflow/dags/src
+      - ../.env:/opt/airflow/.env
+    env_file:
+      - ../.env
+    environment:
+      - AIRFLOW_HOME=/opt/airflow
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow_postgres:5432/${AIRFLOW_DB}
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow_apiserver:8080/execution/
+      - AIRFLOW__CORE__AUTH_MANAGER=airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      - AIRFLOW__API_AUTH__JWT_SECRET=${AIRFLOW_JWT_SECRET}
+    depends_on:
+      airflow_postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      airflow_init:
+        condition: service_completed_successfully
+    networks:
+      - stream-network
+    command: airflow api-server
+
+  airflow_scheduler:
+    image: stock-pipeline:latest
+    container_name: airflow_scheduler
+    restart: unless-stopped
+    volumes:
+      - ../airflow/dags:/opt/airflow/dags
+      - ../airflow/config:/opt/airflow/config
+      - ../airflow/logs:/opt/airflow/logs
+      - ../src:/opt/airflow/dags/src
+      - ../.env:/opt/airflow/.env
+    env_file:
+      - ../.env
+    environment:
+      - AIRFLOW_HOME=/opt/airflow
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow_postgres:5432/${AIRFLOW_DB}
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow_apiserver:8080/execution/
+      - AIRFLOW__API_AUTH__JWT_SECRET=${AIRFLOW_JWT_SECRET}
+    depends_on:
+      airflow_postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      airflow_init:
+        condition: service_completed_successfully
+    networks:
+      - stream-network
+    command: airflow scheduler
+
+  airflow_dag_processor:
+    image: stock-pipeline:latest
+    container_name: airflow_dag_processor
+    restart: unless-stopped
+    volumes:
+      - ../airflow/dags:/opt/airflow/dags
+      - ../airflow/config:/opt/airflow/config
+      - ../airflow/logs:/opt/airflow/logs
+      - ../src:/opt/airflow/dags/src
+      - ../.env:/opt/airflow/.env
+    env_file:
+      - ../.env
+    environment:
+      - AIRFLOW_HOME=/opt/airflow
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow_postgres:5432/${AIRFLOW_DB}
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow_apiserver:8080/execution/
+      - AIRFLOW__API_AUTH__JWT_SECRET=${AIRFLOW_JWT_SECRET}
+    depends_on:
+      airflow_postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      airflow_init:
+        condition: service_completed_successfully
+    networks:
+      - stream-network
+    command: airflow dag-processor
+
   clickhouse:
     image: clickhouse/clickhouse-server:25.8-alpine
     container_name: stock_clickhouse
@@ -21,7 +158,7 @@ services:
     networks:
       - stream-network
     healthcheck:
-      test: [ "CMD-SHELL", "clickhouse-client --user=${CLICKHOUSE_USER} --password=${CLICKHOUSE_PASSWORD} --query='SELECT 1'" ]
+      test: [ "CMD-SHELL", "clickhouse-client --user='${CLICKHOUSE_USER}' --password='${CLICKHOUSE_PASSWORD}' --query='SELECT 1'" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -31,6 +168,7 @@ services:
       context: ../
       dockerfile: docker/Dockerfile
       target: builder
+    image: stock-pipeline:latest
     container_name: python_finance
     restart: unless-stopped
     working_dir: /app
@@ -55,3 +193,4 @@ networks:
 
 volumes:
   chdata:
+  postgres_data:
