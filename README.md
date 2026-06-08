@@ -82,7 +82,8 @@ graph LR
 | **Bronze / Silver** | PySpark + Delta Lake | `Spark 4.1.1` · `Delta 4.2.0` | ACID transactions, time travel, schema enforcement, and window-based deduplication. |
 | **Gold / OLAP** | ClickHouse | `25.8 LTS (Alpine)` | Columnar OLAP database providing sub-second aggregations on large datasets. |
 | **Database Driver** | clickhouse-connect | `Latest` | Official lightweight Python connector; no JDBC dependency required. |
-| **Orchestration** | GNU Make | `CLI` | Granular, isolated commands that map directly to `BashOperator` tasks. |
+| **Orchestration** | Apache Airflow | `3.2.2` | Decoupled architecture (`api-server`, `scheduler`, `dag-processor`) orchestrating Medallion tasks. |
+| **Metastore** | PostgreSQL | `18-alpine` | Metadata database for Apache Airflow. |
 
 ---
 
@@ -141,34 +142,28 @@ stock_market_pipeline/
 
 ### 1 — Configure environment variables
 
-Duplicate the environment variables file and configure your credentials:
+Duplicate the environment variables file and configure your credentials in the new `.env` file:
 
 ```bash
 cp .env.example .env
 ```
 
-Your `.env` file should look like this:
-```ini
-# ClickHouse Credentials (OLAP - Gold Layer)
-CLICKHOUSE_HOST=clickhouse
-CLICKHOUSE_PORT=8123
-CLICKHOUSE_DB=stock_market
-CLICKHOUSE_USER=finance_admin
-CLICKHOUSE_PASSWORD=finance_secure_pass123
-
-# Data paths (Bronze and Silver - Delta Lake files inside container)
-BRONZE_PATH=/data/bronze
-SILVER_PATH=/data/silver
-```
 
 ### 2 — Build and start the containers
+
+Start the multi-container environment (Airflow services, PostgreSQL metastore, ClickHouse, and Python workspace):
 
 ```bash
 make build
 ```
-This starts two containers:
+This starts the following services:
 - `stock_clickhouse`: ClickHouse server on HTTP port `8123` and native TCP port `9000`. Runs `src/db_init/init.sql` automatically on first boot.
-- `python_finance`: Isolated workspace with Python 3.13, Java 21, and all pipeline dependencies.
+- `airflow_postgres`: PostgreSQL 18 database metastore for Airflow.
+- `airflow_init`: One-off database migration and admin user creation task.
+- `airflow_apiserver`: Airflow 3 API Server and Web UI on port `8080`.
+- `airflow_scheduler`: Airflow Scheduler orchestrating DAGs.
+- `airflow_dag_processor`: Standalone Dag Processor parsing DAG definitions.
+- `python_finance`: Isolated Python 3.13 workspace containing Java 21, Spark 4.1.1, and dev tools.
 
 ### 3 — Code Quality
 
@@ -365,8 +360,8 @@ docker pull ghcr.io/eikesf/stock-market-pipeline:latest
 ---
 
 ## Roadmap & Future Improvements
-- **Orchestration:** Implement Apache Airflow DAGs to replace `make` command execution.
-- **Data Quality:** Integrate Great Expectations or Soda for automated data quality assertions in the Silver layer.
-- **Type Safety:** Achieve full Mypy strict compliance across the `src/` module.
-- **Observability:** Add structured logging with correlation IDs per pipeline run.
+- [x] **Orchestration:** Implement Apache Airflow DAGs to replace `make` command execution.
+- [ ] **Data Quality:** Integrate Great Expectations or Soda for automated data quality assertions in the Silver layer.
+- [ ] **Type Safety:** Achieve full Mypy strict compliance across the `src/` module.
+- [ ] **Observability:** Add structured logging with correlation IDs per pipeline run.
 
