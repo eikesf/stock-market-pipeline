@@ -36,3 +36,7 @@ derby.log
 _delta_log/
 .delta_log/
 *.crc
+
+# Airflow
+airflow/logs/
+airflow/config/
