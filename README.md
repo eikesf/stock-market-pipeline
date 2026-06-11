@@ -6,6 +6,7 @@
 ![ClickHouse](https://img.shields.io/badge/ClickHouse-25.8_LTS-FFCC01?style=flat-square&logo=clickhouse&logoColor=black)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)
 ![CI/CD](https://github.com/eikesf/stock-market-pipeline/actions/workflows/ci.yml/badge.svg)
+![Apache Airflow](https://img.shields.io/badge/Apache_Airflow-3.2.2-017CEE?style=flat-square&logo=apacheairflow&logoColor=white)
 
 An end-to-end Data Engineering platform that ingests financial asset data and metadata from **B3, NASDAQ, and NYSE**, processes it through a **Medallion Architecture** (Landing → Bronze → Silver → Gold) using PySpark and Delta Lake, and delivers analytics-ready data via ClickHouse in a **Star Schema**.
 
