@@ -28,3 +28,4 @@ def test_dag_standards():
         assert dag.tags, f"DAG {dag_id} needs to have at least one tag."
         assert dag.catchup is False, f"DAG {dag_id} needs to have catchup set to False."
         assert dag.schedule is not None, f"DAG {dag_id} needs to have a schedule set."
+        assert dag.start_date is not None, f"DAG {dag_id} needs to have a start_date set."

@@ -107,3 +107,13 @@ def test_fetch_table_match_and_flavor_fallback(mock_read_html, mock_get):
     res = _fetch_table("http://dummy.url", match="constituents")
     assert res == ["MSFT"]
     assert mock_read_html.call_count == 2
+
+
+@patch("src.producer.tickers.get_all_tickers")
+def test_tickers_main(mock_get_all_tickers):
+    """Test the main entry point to ensure it queries tickers list."""
+    from src.producer.tickers import main
+
+    mock_get_all_tickers.return_value = {"NASDAQ": ["AAPL"]}
+    main()
+    mock_get_all_tickers.assert_called_once()

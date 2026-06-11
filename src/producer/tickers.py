@@ -88,6 +88,11 @@ def get_all_tickers() -> dict[str, list[str]]:
     }
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Main entry point to list all fetched tickers."""
     for exchange, tickers in get_all_tickers().items():
         logger.info(f"{exchange}: {len(tickers)} tickers — {tickers[:5]}...")
+
+
+if __name__ == "__main__":
+    main()
