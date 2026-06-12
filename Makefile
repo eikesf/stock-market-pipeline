@@ -4,7 +4,7 @@ export DOCKER_CLI_HINTS=false
 
 .PHONY: up down build shell lint lint_fix format test test_cov run run_prices run_metadata _prices_flow _metadata_flow run_landing_prices run_landing_metadata \
 		run_bronze_prices run_bronze_metadata run_silver_prices \
-		run_silver_metadata run_gold clean clean_data reset
+		run_silver_metadata run_gold run_gold_prices run_gold_metadata clean clean_data reset
 
 # --- Infrastructure ---
 up: ## Start the Docker environment
@@ -57,9 +57,9 @@ _metadata_flow:
 	@$(MAKE) run_bronze_metadata
 	@$(MAKE) run_silver_metadata
 
-run_prices: _prices_flow run_gold ## Run only Prices pipeline
+run_prices: _prices_flow run_gold_prices ## Run only Prices pipeline
 
-run_metadata: _metadata_flow run_gold ## Run only Metadata pipeline
+run_metadata: _metadata_flow run_gold_metadata ## Run only Metadata pipeline
 
 run: _prices_flow _metadata_flow run_gold ## Run the full Medallion pipeline
 	@echo "\nFull pipeline completed successfully."
@@ -82,5 +82,11 @@ run_silver_prices: ## Run only Silver layer for prices
 run_silver_metadata: ## Run only Silver layer for metadata
 	@docker exec -it python_finance python -m src.streaming.silver_metadata
 
-run_gold: ## Run only Gold layer
+run_gold: ## Run only Gold layer (both prices and metadata)
 	@docker exec -it python_finance python -m src.streaming.gold
+
+run_gold_prices: ## Run only Gold layer for prices
+	@docker exec -it python_finance python -m src.streaming.gold --table prices
+
+run_gold_metadata: ## Run only Gold layer for metadata
+	@docker exec -it python_finance python -m src.streaming.gold --table metadata

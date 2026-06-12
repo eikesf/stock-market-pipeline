@@ -1,11 +1,12 @@
-import importlib
-import sys
 from datetime import datetime
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
+from loguru import logger
 from pyspark.sql.types import DateType, DecimalType, IntegerType, LongType, StringType, TimestampType
+
+from src.streaming.silver_metadata import main
 
 
 def test_silver_metadata_cleaning_and_casting(spark_session, tmp_path):
@@ -40,15 +41,12 @@ def test_silver_metadata_cleaning_and_casting(spark_session, tmp_path):
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
 
     with (
-        patch("src.producer.config.BRONZE_METADATA_DIR", bronze_metadata_dir),
-        patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir),
-        patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        if "src.streaming.silver_metadata" in sys.modules:
-            importlib.reload(sys.modules["src.streaming.silver_metadata"])
-        else:
-            importlib.import_module("src.streaming.silver_metadata")
+        main()
 
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
     assert df_silver_metadata.count() == 1
@@ -171,15 +169,12 @@ def test_silver_metadata_null_dropping(spark_session, tmp_path):
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
 
     with (
-        patch("src.producer.config.BRONZE_METADATA_DIR", bronze_metadata_dir),
-        patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir),
-        patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        if "src.streaming.silver_metadata" in sys.modules:
-            importlib.reload(sys.modules["src.streaming.silver_metadata"])
-        else:
-            importlib.import_module("src.streaming.silver_metadata")
+        main()
 
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
     assert df_silver_metadata.count() == 1
@@ -312,15 +307,12 @@ def test_silver_metadata_exchange_standardization(spark_session, tmp_path):
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
 
     with (
-        patch("src.producer.config.BRONZE_METADATA_DIR", bronze_metadata_dir),
-        patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir),
-        patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        if "src.streaming.silver_metadata" in sys.modules:
-            importlib.reload(sys.modules["src.streaming.silver_metadata"])
-        else:
-            importlib.import_module("src.streaming.silver_metadata")
+        main()
 
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
     assert df_silver_metadata.count() == 7
@@ -391,15 +383,12 @@ def test_silver_metadata_deduplication_by_ticker(spark_session, tmp_path):
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
 
     with (
-        patch("src.producer.config.BRONZE_METADATA_DIR", bronze_metadata_dir),
-        patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir),
-        patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        if "src.streaming.silver_metadata" in sys.modules:
-            importlib.reload(sys.modules["src.streaming.silver_metadata"])
-        else:
-            importlib.import_module("src.streaming.silver_metadata")
+        main()
 
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
     assert df_silver_metadata.count() == 3
@@ -414,8 +403,6 @@ def test_silver_metadata_failure(spark_session, tmp_path):
     """
     Test Silver metadata pipeline exit code 1 when processing fails.
     """
-    from loguru import logger
-
     bronze_metadata_dir = tmp_path / "bronze_metadata"
     bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
 
@@ -449,17 +436,16 @@ def test_silver_metadata_failure(spark_session, tmp_path):
 
     try:
         with (
-            patch("src.producer.config.BRONZE_METADATA_DIR", bronze_metadata_dir),
-            patch("src.producer.config.SILVER_METADATA_DIR", silver_metadata_dir),
-            patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
-            patch("src.streaming.utils.write_delta_table", side_effect=Exception("Simulated writing failure")),
+            patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+            patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+            patch(
+                "src.streaming.silver_metadata.write_delta_table", side_effect=Exception("Simulated writing failure")
+            ),
             patch.object(spark_session, "stop"),
             pytest.raises(SystemExit) as exc_info,
         ):
-            if "src.streaming.silver_metadata" in sys.modules:
-                importlib.reload(sys.modules["src.streaming.silver_metadata"])
-            else:
-                importlib.import_module("src.streaming.silver_metadata")
+            main()
     finally:
         logger.remove(sink_id)
 
@@ -469,3 +455,79 @@ def test_silver_metadata_failure(spark_session, tmp_path):
     log_content = "".join(captured_logs)
     assert "Failed to process Silver layer metadata" in log_content
     assert "Simulated writing failure" in log_content
+
+
+def test_silver_metadata_date_from_arguments(spark_session, tmp_path):
+    """
+    Test that Silver metadata pipeline parses --date from CLI arguments correctly.
+    """
+    bronze_metadata_dir = tmp_path / "bronze_metadata"
+    bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metadata_dir = tmp_path / "silver_metadata"
+    silver_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    df_bronze = pd.DataFrame(
+        {
+            "ticker": ["AAPL"],
+            "short_name": ["Apple Inc."],
+            "sector": ["Technology"],
+            "industry": ["Electronics"],
+            "country": ["USA"],
+            "isin": ["US0378331005"],
+            "full_time_employees": [160000],
+            "exchange": ["NASDAQ"],
+            "market_cap": [2600000000000],
+            "currency": ["USD"],
+            "dividend_yield": [0.005],
+            "extraction_date": ["2026-05-28"],
+            "ingestion_timestamp": ["2026-05-28 10:00:00"],
+        }
+    )
+
+    df_bronze_spark = spark_session.createDataFrame(df_bronze)
+    df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
+
+    with (
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+        patch("sys.argv", ["silver_metadata.py", "--date", "2026-05-28"]),
+        patch.object(spark_session, "stop"),
+    ):
+        main()
+
+    df_silver = spark_session.read.format("delta").load(str(silver_metadata_dir))
+    assert df_silver.count() == 1
+
+
+def test_silver_metadata_invalid_date_format(spark_session, tmp_path):
+    """
+    Test that an invalid date format passed to --date exits with code 1.
+    """
+    bronze_metadata_dir = tmp_path / "bronze_metadata"
+    bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metadata_dir = tmp_path / "silver_metadata"
+    silver_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    # Capture logs to assert expected error messages on pipeline failure
+    captured_logs = []
+    sink_id = logger.add(lambda msg: captured_logs.append(str(msg)), level="ERROR")
+
+    try:
+        with (
+            patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+            patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+            patch("sys.argv", ["silver_metadata.py", "--date", "invalid_date_format"]),
+            patch.object(spark_session, "stop"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+    finally:
+        logger.remove(sink_id)
+
+    assert exc_info.value.code == 1
+    log_content = "".join(captured_logs)
+    assert "Invalid date format" in log_content

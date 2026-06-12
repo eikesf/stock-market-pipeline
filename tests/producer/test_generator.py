@@ -44,7 +44,7 @@ class TestPriceGenerator:
         mock_df.index.name = "Date"
         mock_download.return_value = mock_df
 
-        run_generator()
+        run_generator("2026-05-26")
 
         mock_to_parquet.assert_called_once()
         call_args, call_kwargs = mock_to_parquet.call_args
@@ -69,7 +69,7 @@ class TestPriceGenerator:
         mock_df.index.name = "Date"
         mock_download.return_value = mock_df
 
-        run_generator()
+        run_generator("2026-05-26")
 
         mock_to_parquet.assert_called_once()
         call_args, call_kwargs = mock_to_parquet.call_args
@@ -89,7 +89,7 @@ class TestPriceGenerator:
         mock_download.side_effect = Exception("Network error")
 
         with pytest.raises(SystemExit) as exc_info:
-            run_generator()
+            run_generator("2026-05-26")
 
         assert exc_info.value.code == 1
         mock_to_parquet.assert_not_called()
@@ -102,7 +102,7 @@ class TestPriceGenerator:
         mock_download.return_value = pd.DataFrame()
 
         with pytest.raises(SystemExit) as exc_info:
-            run_generator()
+            run_generator("2026-05-26")
 
         assert exc_info.value.code == 0
         mock_to_parquet.assert_not_called()
@@ -136,7 +136,7 @@ class TestPriceGenerator:
 
         # Intercept DataFrame save to inspect processed columns
         with patch("pandas.DataFrame.to_parquet", get_df):
-            run_generator()
+            run_generator("2026-05-26")
 
         assert df_final is not None
         assert "dividends" in df_final.columns
@@ -164,7 +164,7 @@ class TestPriceGenerator:
             df_final = df_self
 
         with patch("pandas.DataFrame.to_parquet", get_df):
-            run_generator()
+            run_generator("2025-05-26")
 
         assert df_final is not None
         assert "adj_close" in df_final.columns
@@ -190,7 +190,7 @@ class TestPriceGenerator:
             df_final = df_self
 
         with patch("pandas.DataFrame.to_parquet", get_df):
-            run_generator()
+            run_generator("2025-05-26")
 
         assert df_final is not None
         assert df_final["volume"].dtype == "int64"
@@ -238,7 +238,7 @@ class TestPriceGenerator:
             df_final = df_self
 
         with patch("pandas.DataFrame.to_parquet", get_df):
-            run_generator()
+            run_generator("2026-05-29")
 
         assert df_final is not None
         assert df_final.shape[0] == 2
@@ -278,7 +278,7 @@ class TestPriceGenerator:
         mock_to_parquet.side_effect = Exception("Write error: Disk full")
 
         with pytest.raises(SystemExit) as exc_info:
-            run_generator()
+            run_generator("2026-05-26")
 
         assert exc_info.value.code == 1
         mock_to_parquet.assert_called_once()
@@ -290,7 +290,29 @@ class TestPriceGenerator:
         mock_get_all_tickers.return_value = {"NASDAQ": [], "B3": []}
 
         with pytest.raises(SystemExit) as exc_info:
-            run_generator()
+            run_generator("2026-05-26")
 
         assert exc_info.value.code == 1
         mock_download.assert_not_called()
+
+    @patch("src.producer.generator.run_generator")
+    def test_generator_main_valid_date(self, mock_run_generator, mock_to_parquet, mock_download, mock_get_all_tickers):
+        """Test generator main entrypoint with valid date parameter."""
+        from src.producer.generator import main
+
+        with patch("sys.argv", ["generator.py", "--date", "2026-05-26"]):
+            main()
+            mock_run_generator.assert_called_once_with("2026-05-26")
+
+    @patch("src.producer.generator.run_generator")
+    def test_generator_main_invalid_date(
+        self, mock_run_generator, mock_to_parquet, mock_download, mock_get_all_tickers
+    ):
+        """Test generator main entrypoint with invalid date format (exits with code 1)."""
+        from src.producer.generator import main
+
+        with patch("sys.argv", ["generator.py", "--date", "invalid-date"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+            mock_run_generator.assert_not_called()

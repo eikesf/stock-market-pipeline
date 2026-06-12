@@ -29,6 +29,7 @@ services:
       - ../airflow/logs:/opt/airflow/logs
       - ../src:/opt/airflow/dags/src
       - ../.env:/opt/airflow/.env
+      - ../data:/opt/airflow/data
     env_file:
       - ../.env
     environment:
@@ -36,6 +37,7 @@ services:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow_postgres:5432/${AIRFLOW_DB}
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - DATA_DIR=/opt/airflow/data
     depends_on:
       airflow_postgres:
         condition: service_healthy
@@ -55,6 +57,7 @@ services:
       - ../airflow/logs:/opt/airflow/logs
       - ../src:/opt/airflow/dags/src
       - ../.env:/opt/airflow/.env
+      - ../data:/opt/airflow/data
     env_file:
       - ../.env
     environment:
@@ -65,6 +68,7 @@ services:
       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
       - AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow_apiserver:8080/execution/
       - AIRFLOW__API_AUTH__JWT_SECRET=${AIRFLOW_JWT_SECRET}
+      - DATA_DIR=/opt/airflow/data
     depends_on:
       airflow_postgres:
         condition: service_healthy
@@ -86,6 +90,7 @@ services:
       - ../airflow/logs:/opt/airflow/logs
       - ../src:/opt/airflow/dags/src
       - ../.env:/opt/airflow/.env
+      - ../data:/opt/airflow/data
     env_file:
       - ../.env
     environment:
@@ -96,6 +101,7 @@ services:
       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
       - AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow_apiserver:8080/execution/
       - AIRFLOW__API_AUTH__JWT_SECRET=${AIRFLOW_JWT_SECRET}
+      - DATA_DIR=/opt/airflow/data
     depends_on:
       airflow_postgres:
         condition: service_healthy
@@ -117,6 +123,7 @@ services:
       - ../airflow/logs:/opt/airflow/logs
       - ../src:/opt/airflow/dags/src
       - ../.env:/opt/airflow/.env
+      - ../data:/opt/airflow/data
     env_file:
       - ../.env
     environment:
@@ -127,6 +134,7 @@ services:
       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
       - AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow_apiserver:8080/execution/
       - AIRFLOW__API_AUTH__JWT_SECRET=${AIRFLOW_JWT_SECRET}
+      - DATA_DIR=/opt/airflow/data
     depends_on:
       airflow_postgres:
         condition: service_healthy
