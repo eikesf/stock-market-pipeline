@@ -97,6 +97,10 @@ max-complexity = 10
     "PLC0415", # import should be at the top-level (inline imports needed for mocking/isolation)
     "PLR2004", # magic value in comparison (common and expected in assert statements)
 ]
+"airflow/dags/**/*.py" = [
+    "PLC0415", # import should be at the top-level (to avoid importing PySpark/heavy dependencies on DAG parse time)
+    "ANN401",  # dynamically typed expressions (typing.Any) (allowed for context dicts)
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
