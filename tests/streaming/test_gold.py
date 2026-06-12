@@ -561,4 +561,98 @@ def test_gold_missing_both_delta_tables(spark_session, tmp_path):
     assert mock_client.insert_df.call_count == 0
 
     log_content = "".join(captured_logs)
-    assert "Neither Silver Prices nor Silver Metadata Delta tables exist. Skipping Gold layer processing" in log_content
+    assert (
+        "Neither Silver Prices nor Silver Metadata Delta tables exist. Skipping Gold layer processing" in log_content
+        or "No matching Silver Delta tables exist to process" in log_content
+    )
+
+
+def test_gold_selective_loading(spark_session, tmp_path):
+    """
+    Test that run_gold with target table selection only processes the requested table and ignores the other.
+    """
+    # Define test parameters dynamically
+    test_cases = [
+        ("prices", "fact_prices", "Silver Metadata skipped (not requested by target table selection)", "dim_companies"),
+        ("metadata", "dim_companies", "Silver Prices skipped (not requested by target table selection)", "fact_prices"),
+    ]
+
+    for table_param, expected_processed, expected_skipped_log, expected_unprocessed_table in test_cases:
+        silver_prices_dir = tmp_path / f"silver_prices_{table_param}"
+        silver_prices_dir.mkdir(parents=True, exist_ok=True)
+
+        silver_metadata_dir = tmp_path / f"silver_metadata_{table_param}"
+        silver_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+        df_prices = pd.DataFrame(
+            {
+                "date": [date(2026, 5, 28)],
+                "ticker": ["AAPL"],
+                "open": [170.5],
+                "high": [172.5],
+                "low": [168.5],
+                "close": [171.5],
+                "adj_close": [171.5],
+                "volume": [10000],
+                "dividends": [0.5],
+                "stock_splits": [0.0],
+                "ingestion_timestamp": ["2026-05-28 10:00:00"],
+            }
+        )
+
+        df_metadata = pd.DataFrame(
+            {
+                "ticker": ["AAPL"],
+                "short_name": ["Apple Inc."],
+                "sector": ["Technology"],
+                "industry": ["Electronics"],
+                "country": ["USA"],
+                "isin": ["US0378331005"],
+                "full_time_employees": [160000],
+                "exchange": ["NASDAQ"],
+                "market_cap": [2600000000000],
+                "currency": ["USD"],
+                "dividend_yield": [0.005],
+                "extraction_date": [date(2026, 5, 28)],
+                "ingestion_timestamp": ["2026-05-28 10:00:00"],
+            }
+        )
+
+        spark_session.createDataFrame(df_prices).write.format("delta").mode("overwrite").save(str(silver_prices_dir))
+        spark_session.createDataFrame(df_metadata).write.format("delta").mode("overwrite").save(
+            str(silver_metadata_dir)
+        )
+
+        mock_client = MagicMock()
+        captured_logs = []
+        sink_id = logger.add(lambda msg, logs=captured_logs: logs.append(str(msg)), level="INFO")
+
+        try:
+            from src.streaming.gold import run_gold
+
+            with (
+                patch("src.streaming.gold.SILVER_PRICES_DIR", silver_prices_dir),
+                patch("src.streaming.gold.SILVER_METADATA_DIR", silver_metadata_dir),
+                patch("src.streaming.gold.get_clickhouse_client", return_value=mock_client),
+                patch("src.streaming.gold.create_spark_session", return_value=spark_session),
+                patch.object(spark_session, "stop"),
+            ):
+                run_gold(exec_date="2026-05-28", table=table_param)
+        finally:
+            logger.remove(sink_id)
+
+        # The expected table staging and loading should be executed
+        mock_client.command.assert_any_call(
+            f"CREATE TABLE IF NOT EXISTS stock_market.{expected_processed}_staging AS stock_market.{expected_processed}"
+        )
+        # The ignored table should NOT be processed
+        with pytest.raises(AssertionError):
+            mock_client.command.assert_any_call(
+                f"CREATE TABLE IF NOT EXISTS stock_market.{expected_unprocessed_table}_staging AS stock_market.{expected_unprocessed_table}"
+            )
+
+        assert mock_client.insert_df.call_count == 1
+        assert mock_client.insert_df.call_args_list[0][0][0] == f"stock_market.{expected_processed}_staging"
+
+        log_content = "".join(captured_logs)
+        assert expected_skipped_log in log_content

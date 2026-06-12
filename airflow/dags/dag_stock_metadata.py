@@ -8,8 +8,38 @@ default_args = {
     "owner": "eikesf",
     "depends_on_past": False,
     "retries": 1,
+    "retry_delay": timedelta(minutes=5),
     "execution_timeout": timedelta(minutes=20),
 }
+
+
+def _create_spark_pool() -> None:
+    """Programmatically checks and creates the 'spark_write_pool' in the Airflow metadata database.
+
+    This pool is configured with a single slot to serialize Spark write operations,
+    preventing concurrent write conflicts and file corruption on local file systems.
+    """
+    try:
+        from airflow.models.pool import Pool
+        from airflow.utils.session import create_session
+
+        with create_session() as session:
+            pool = session.query(Pool).filter(Pool.pool == "spark_write_pool").first()
+            if not pool:
+                new_pool = Pool(
+                    pool="spark_write_pool",
+                    slots=1,
+                    description="Serializes Spark writes to prevent Delta Lake filesystem conflicts",
+                )
+                session.add(new_pool)
+                session.commit()
+    except Exception as e:
+        import logging
+
+        logging.getLogger("airflow.dag").warning("Failed to programmatically create spark_write_pool: %s", e)
+
+
+_create_spark_pool()
 
 
 @task(task_id="task_extract_metadata")
@@ -21,7 +51,7 @@ def extract_metadata(**context: Any) -> None:
     run_metadata_generator(exec_date=exec_date)
 
 
-@task(task_id="task_ingest_bronze_metadata")
+@task(task_id="task_ingest_bronze_metadata", pool="spark_write_pool")
 def ingest_bronze_metadata(**context: Any) -> None:
     """Ingest stock metadata from Landing zone to Bronze using Spark."""
     from src.streaming.bronze_metadata import run_bronze_metadata
@@ -30,7 +60,7 @@ def ingest_bronze_metadata(**context: Any) -> None:
     run_bronze_metadata(exec_date=exec_date)
 
 
-@task(task_id="task_deduplicate_silver_metadata")
+@task(task_id="task_deduplicate_silver_metadata", pool="spark_write_pool")
 def deduplicate_silver_metadata(**context: Any) -> None:
     """Deduplicate stock metadata in Silver Layer using Spark."""
     from src.streaming.silver_metadata import run_silver_metadata
@@ -39,13 +69,13 @@ def deduplicate_silver_metadata(**context: Any) -> None:
     run_silver_metadata(exec_date=exec_date)
 
 
-@task(task_id="task_load_gold_metadata")
+@task(task_id="task_load_gold_metadata", pool="spark_write_pool")
 def load_gold_metadata(**context: Any) -> None:
     """Load deduplicated stock metadata from Silver Layer to Gold Layer using Spark."""
     from src.streaming.gold import run_gold
 
     exec_date = context["ds"]
-    run_gold(exec_date=exec_date)
+    run_gold(exec_date=exec_date, table="metadata")
 
 
 with DAG(
