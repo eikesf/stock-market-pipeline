@@ -81,6 +81,7 @@ _create_clickhouse_connection()
 def extract_metadata(**context: Any) -> None:
     """Extracts stock metadata from Yahoo Finance for a list of tickers and saves them to Landing Zone."""
     from airflow.sdk import Variable
+
     from src.producer.metadata_generator import run_metadata_generator
 
     try:
@@ -114,6 +115,7 @@ def deduplicate_silver_metadata(**context: Any) -> None:
 def load_gold_metadata(**context: Any) -> None:
     """Load deduplicated stock metadata from Silver Layer to Gold Layer using Spark."""
     from airflow.sdk import BaseHook
+
     from src.streaming.gold import run_gold
 
     try:

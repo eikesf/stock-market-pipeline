@@ -20,6 +20,7 @@ default_args = {
     "execution_timeout": timedelta(minutes=10),
 }
 
+
 def _create_clickhouse_connection() -> None:
     """Programmatically checks and creates the 'clickhouse_default' connection in the Airflow metadata database."""
     try:
@@ -44,6 +45,7 @@ def _create_clickhouse_connection() -> None:
         import logging
 
         logging.getLogger("airflow.dag").warning("Failed to programmatically create clickhouse connection: %s", e)
+
 
 def _create_spark_pool() -> None:
     """Programmatically checks and creates the 'spark_write_pool' in the Airflow metadata database.
@@ -79,6 +81,7 @@ _create_spark_pool()
 def extract_prices(**context: Any) -> None:
     """Extracts stock prices from Yahoo Finance for a list of tickers and saves them to Landing layer."""
     from airflow.sdk import Variable
+
     from src.producer.generator import run_generator
 
     try:
@@ -112,6 +115,7 @@ def deduplicate_silver_prices(**context: Any) -> None:
 def load_gold_prices(**context: Any) -> None:
     """Loads deduplicated stock prices from Silver Layer to Gold Layer using staging tables."""
     from airflow.sdk import BaseHook
+
     from src.streaming.gold import run_gold
 
     try:
