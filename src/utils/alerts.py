@@ -203,7 +203,7 @@ def send_airflow_failure_discord(context: dict[str, Any]) -> None:
     if len(exception_str) > MAX_EXCEPTION_LENGTH:
         exception_str = exception_str[:MAX_EXCEPTION_LENGTH] + "..."
 
-    payload = {
+    payload: dict[str, Any] = {
         "username": "Airflow Alerts",
         "embeds": [
             {
