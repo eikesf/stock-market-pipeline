@@ -11,12 +11,13 @@ from src.producer.tickers import get_all_tickers
 from src.utils.logger import logger
 
 
-def run_metadata_generator(exec_date: str | None = None) -> None:
+def run_metadata_generator(exec_date: str | None = None, tickers: list[str] | None = None) -> None:
     """Extract company metadata from yFinance and persist to the Landing zone."""
     if exec_date is None:
         exec_date = date.today().isoformat()
-    # Grab tickers from the dictionary
-    tickers = [ticker for exchange_tickers in get_all_tickers().values() for ticker in exchange_tickers]
+    # Grab tickers from the dictionary if not provided
+    if not tickers:
+        tickers = [ticker for exchange_tickers in get_all_tickers().values() for ticker in exchange_tickers]
 
     # Empty to store all data
     metadata_records = []

@@ -2,7 +2,7 @@
 COMPOSE_FILE = docker/docker-compose.yml
 export DOCKER_CLI_HINTS=false
 
-.PHONY: up down build shell lint lint_fix format test test_cov run run_prices run_metadata _prices_flow _metadata_flow run_landing_prices run_landing_metadata \
+.PHONY: up down build shell airflow_up airflow_down lint lint_fix format test test_cov run run_prices run_metadata _prices_flow _metadata_flow run_landing_prices run_landing_metadata \
 		run_bronze_prices run_bronze_metadata run_silver_prices \
 		run_silver_metadata run_gold run_gold_prices run_gold_metadata clean clean_data reset
 
@@ -18,6 +18,12 @@ down: ## Stop and remove the Docker environment
 
 shell: ## Access the Python container bash shell
 	docker exec -it python_finance bash
+
+airflow_up: ## Start only the Airflow orchestration services
+	docker compose --env-file .env -f $(COMPOSE_FILE) up -d airflow_postgres airflow_init airflow_apiserver airflow_scheduler airflow_dag_processor
+
+airflow_down: ## Stop only the Airflow orchestration services
+	docker compose --env-file .env -f $(COMPOSE_FILE) stop airflow_postgres airflow_apiserver airflow_scheduler airflow_dag_processor
 
 # --- Quality & Testing ---
 lint: ## Run Ruff linter checks inside the container
