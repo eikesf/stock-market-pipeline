@@ -238,6 +238,15 @@ make clean # Stop containers and remove Docker volumes (ClickHouse data is lost)
 make reset # Full reset: clean + remove local data/ directory
 ```
 
+### 4 — Control Orchestration Modularly (Optional)
+
+If you are developing locally and wish to stop only the resource-heavy Airflow orchestration containers to free up system resources while keeping ClickHouse and the Python workspace active:
+
+```bash
+make airflow_down # Stop Airflow Postgres, Webserver, Scheduler, and Dag Processor
+make airflow_up   # Start only the Airflow orchestration services
+```
+
 ---
 
 ## Code Quality
