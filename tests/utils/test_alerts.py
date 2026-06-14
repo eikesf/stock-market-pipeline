@@ -79,7 +79,6 @@ def test_send_airflow_failure_discord() -> None:
         patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/dummy"}),
         patch("requests.post") as mock_post,
     ):
-        # Mock response status
         mock_response = MagicMock()
         mock_response.status_code = 204
         mock_post.return_value = mock_response
@@ -94,7 +93,6 @@ def test_send_airflow_failure_discord() -> None:
         embed = payload["embeds"][0]
         assert embed["title"] == "Task Failure Notification"
 
-        # Verify fields
         fields = {f["name"]: f["value"] for f in embed["fields"]}
         assert fields["DAG ID"] == "`test_dag`"
         assert fields["Task ID"] == "`test_task`"
