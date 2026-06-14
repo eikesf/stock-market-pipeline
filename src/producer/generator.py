@@ -10,7 +10,7 @@ from src.producer.tickers import get_all_tickers
 from src.utils.logger import logger
 
 
-def run_generator(exec_date: str) -> None:
+def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
     """Extract daily stock prices from yFinance and persist to the Landing zone."""
     # Convert exec_date to a date object to calculate the next day
     exec_date_obj = date.fromisoformat(exec_date)
@@ -18,8 +18,9 @@ def run_generator(exec_date: str) -> None:
     # Calculating the end_date
     end_date = exec_date_obj + timedelta(days=1)
 
-    # Grab all tickers by flattening the dictionary
-    tickers = [ticker for exchange_tickers in get_all_tickers().values() for ticker in exchange_tickers]
+    # Grab all tickers by flattening the dictionary if not provided
+    if not tickers:
+        tickers = [ticker for exchange_tickers in get_all_tickers().values() for ticker in exchange_tickers]
 
     if not tickers:
         logger.critical("No tickers found to download. Aborting pipeline.")
