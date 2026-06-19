@@ -31,12 +31,21 @@ def _load_prices_to_gold(spark: SparkSession, client: Client) -> None:
     )
     df_prices_pd = df_prices.toPandas()
 
-    client.command("CREATE TABLE IF NOT EXISTS stock_market.fact_prices_staging AS stock_market.fact_prices")
-    client.command("TRUNCATE TABLE stock_market.fact_prices_staging")
-    client.insert_df("stock_market.fact_prices_staging", df_prices_pd)
-    client.command("EXCHANGE TABLES stock_market.fact_prices AND stock_market.fact_prices_staging")
-    client.command("DROP TABLE IF EXISTS stock_market.fact_prices_staging")
-    logger.success("Silver Prices loaded to Gold successfully.")
+    if df_prices_pd.empty:
+        logger.warning("Silver prices DataFrame is empty. Nothing to load to Gold.")
+        return
+
+    # Extract unique partition IDs in 'YYYYMM' format based on dates
+    dates = df_prices_pd["date"].astype(str)
+    affected_partitions = dates.apply(lambda x: x.replace("-", "")[:6]).unique().tolist()
+
+    for partition in affected_partitions:
+        logger.info(f"Dropping partition '{partition}' in ClickHouse fact_prices table...")
+        client.command(f"ALTER TABLE stock_market.fact_prices DROP PARTITION '{partition}'")
+
+    logger.info("Inserting new/updated prices into ClickHouse fact_prices...")
+    client.insert_df("stock_market.fact_prices", df_prices_pd)
+    logger.success("Silver prices loaded to gold successfully.")
 
 
 def _load_metadata_to_gold(spark: SparkSession, client: Client) -> None:

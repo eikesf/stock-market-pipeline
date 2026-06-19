@@ -83,37 +83,34 @@ def test_gold_load_success(spark_session, tmp_path):
     finally:
         logger.remove(sink_id)
 
-    mock_client.command.assert_any_call(
-        "CREATE TABLE IF NOT EXISTS stock_market.fact_prices_staging AS stock_market.fact_prices"
-    )
+    # Assert partition drop and direct load for fact_prices
+    mock_client.command.assert_any_call("ALTER TABLE stock_market.fact_prices DROP PARTITION '202605'")
+    # Assert staging table creation and exchange for dim_companies (keeps staging flow)
     mock_client.command.assert_any_call(
         "CREATE TABLE IF NOT EXISTS stock_market.dim_companies_staging AS stock_market.dim_companies"
     )
-
-    mock_client.command.assert_any_call("TRUNCATE TABLE stock_market.fact_prices_staging")
     mock_client.command.assert_any_call("TRUNCATE TABLE stock_market.dim_companies_staging")
+    mock_client.command.assert_any_call(
+        "EXCHANGE TABLES stock_market.dim_companies AND stock_market.dim_companies_staging"
+    )
+    mock_client.command.assert_any_call("DROP TABLE IF EXISTS stock_market.dim_companies_staging")
 
+    # Assert inserts
     assert mock_client.insert_df.call_count == 2
     first_call_args = mock_client.insert_df.call_args_list[0][0]
     second_call_args = mock_client.insert_df.call_args_list[1][0]
 
-    assert first_call_args[0] == "stock_market.fact_prices_staging"
+    # Prices direct table load
+    assert first_call_args[0] == "stock_market.fact_prices"
     assert isinstance(first_call_args[1], pd.DataFrame)
     assert first_call_args[1].shape[0] == 1
     assert first_call_args[1].iloc[0]["ticker"] == "AAPL"
 
+    # Metadata staging table load
     assert second_call_args[0] == "stock_market.dim_companies_staging"
     assert isinstance(second_call_args[1], pd.DataFrame)
     assert second_call_args[1].shape[0] == 1
     assert second_call_args[1].iloc[0]["ticker"] == "AAPL"
-
-    mock_client.command.assert_any_call("EXCHANGE TABLES stock_market.fact_prices AND stock_market.fact_prices_staging")
-    mock_client.command.assert_any_call(
-        "EXCHANGE TABLES stock_market.dim_companies AND stock_market.dim_companies_staging"
-    )
-
-    mock_client.command.assert_any_call("DROP TABLE IF EXISTS stock_market.fact_prices_staging")
-    mock_client.command.assert_any_call("DROP TABLE IF EXISTS stock_market.dim_companies_staging")
 
     log_content = "".join(captured_logs)
     assert "Starting Gold layer processing" in log_content
@@ -295,16 +292,12 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
     finally:
         logger.remove(sink_id)
 
-    # Check that staging creation and exchange were still executed
-    assert mock_client.insert_df.call_count == 2
+    # Assert insert count is 1 (only for dim_companies_staging, since prices exited early)
+    assert mock_client.insert_df.call_count == 1
     first_call_args = mock_client.insert_df.call_args_list[0][0]
-    second_call_args = mock_client.insert_df.call_args_list[1][0]
 
-    assert first_call_args[0] == "stock_market.fact_prices_staging"
+    assert first_call_args[0] == "stock_market.dim_companies_staging"
     assert first_call_args[1].empty
-
-    assert second_call_args[0] == "stock_market.dim_companies_staging"
-    assert second_call_args[1].empty
 
     log_content = "".join(captured_logs)
     assert "Starting Gold layer processing" in log_content
@@ -452,10 +445,8 @@ def test_gold_missing_metadata_delta_table(spark_session, tmp_path):
     finally:
         logger.remove(sink_id)
 
-    # Check that prices staging table was created and swapped
-    mock_client.command.assert_any_call(
-        "CREATE TABLE IF NOT EXISTS stock_market.fact_prices_staging AS stock_market.fact_prices"
-    )
+    # Check that prices partition drop was called
+    mock_client.command.assert_any_call("ALTER TABLE stock_market.fact_prices DROP PARTITION '202605'")
     # Check that metadata staging table was NOT created
     with pytest.raises(AssertionError):
         mock_client.command.assert_any_call(
@@ -463,7 +454,7 @@ def test_gold_missing_metadata_delta_table(spark_session, tmp_path):
         )
 
     assert mock_client.insert_df.call_count == 1
-    assert mock_client.insert_df.call_args_list[0][0][0] == "stock_market.fact_prices_staging"
+    assert mock_client.insert_df.call_args_list[0][0][0] == "stock_market.fact_prices"
 
     log_content = "".join(captured_logs)
     assert "Processing Silver Prices" in log_content
@@ -518,11 +509,9 @@ def test_gold_missing_prices_delta_table(spark_session, tmp_path):
     mock_client.command.assert_any_call(
         "CREATE TABLE IF NOT EXISTS stock_market.dim_companies_staging AS stock_market.dim_companies"
     )
-    # Check that prices staging table was NOT created
+    # Check that partition drop was NOT called for prices
     with pytest.raises(AssertionError):
-        mock_client.command.assert_any_call(
-            "CREATE TABLE IF NOT EXISTS stock_market.fact_prices_staging AS stock_market.fact_prices"
-        )
+        mock_client.command.assert_any_call("ALTER TABLE stock_market.fact_prices DROP PARTITION '202605'")
 
     assert mock_client.insert_df.call_count == 1
     assert mock_client.insert_df.call_args_list[0][0][0] == "stock_market.dim_companies_staging"
@@ -577,7 +566,7 @@ def test_gold_selective_loading(spark_session, tmp_path):
         ("metadata", "dim_companies", "Silver Prices skipped (not requested by target table selection)", "fact_prices"),
     ]
 
-    for table_param, expected_processed, expected_skipped_log, expected_unprocessed_table in test_cases:
+    for table_param, expected_processed, expected_skipped_log, _expected_unprocessed_table in test_cases:
         silver_prices_dir = tmp_path / f"silver_prices_{table_param}"
         silver_prices_dir.mkdir(parents=True, exist_ok=True)
 
@@ -641,18 +630,17 @@ def test_gold_selective_loading(spark_session, tmp_path):
         finally:
             logger.remove(sink_id)
 
-        # The expected table staging and loading should be executed
-        mock_client.command.assert_any_call(
-            f"CREATE TABLE IF NOT EXISTS stock_market.{expected_processed}_staging AS stock_market.{expected_processed}"
-        )
-        # The ignored table should NOT be processed
-        with pytest.raises(AssertionError):
+        # Assert expectations based on target table param
+        if table_param == "prices":
+            mock_client.command.assert_any_call("ALTER TABLE stock_market.fact_prices DROP PARTITION '202605'")
+            assert mock_client.insert_df.call_count == 1
+            assert mock_client.insert_df.call_args_list[0][0][0] == "stock_market.fact_prices"
+        else:
             mock_client.command.assert_any_call(
-                f"CREATE TABLE IF NOT EXISTS stock_market.{expected_unprocessed_table}_staging AS stock_market.{expected_unprocessed_table}"
+                f"CREATE TABLE IF NOT EXISTS stock_market.{expected_processed}_staging AS stock_market.{expected_processed}"
             )
-
-        assert mock_client.insert_df.call_count == 1
-        assert mock_client.insert_df.call_args_list[0][0][0] == f"stock_market.{expected_processed}_staging"
+            assert mock_client.insert_df.call_count == 1
+            assert mock_client.insert_df.call_args_list[0][0][0] == f"stock_market.{expected_processed}_staging"
 
         log_content = "".join(captured_logs)
         assert expected_skipped_log in log_content
