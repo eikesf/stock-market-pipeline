@@ -1,6 +1,7 @@
 import argparse
 import sys
 from datetime import date
+from typing import TYPE_CHECKING, cast
 
 from clickhouse_connect.driver.client import Client
 from pyspark.sql import SparkSession
@@ -10,6 +11,9 @@ from src.producer.config import SILVER_METADATA_DIR, SILVER_PRICES_DIR
 from src.streaming.spark_session import create_spark_session
 from src.streaming.utils import get_clickhouse_client, read_delta_table
 from src.utils.logger import logger
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 def _load_prices_to_gold(spark: SparkSession, client: Client) -> None:
@@ -29,14 +33,23 @@ def _load_prices_to_gold(spark: SparkSession, client: Client) -> None:
         col("stock_splits"),
         col("ingestion_timestamp"),
     )
-    df_prices_pd = df_prices.toPandas()
+    df_prices_pd = cast("pd.DataFrame", df_prices.toPandas())
 
-    client.command("CREATE TABLE IF NOT EXISTS stock_market.fact_prices_staging AS stock_market.fact_prices")
-    client.command("TRUNCATE TABLE stock_market.fact_prices_staging")
-    client.insert_df("stock_market.fact_prices_staging", df_prices_pd)
-    client.command("EXCHANGE TABLES stock_market.fact_prices AND stock_market.fact_prices_staging")
-    client.command("DROP TABLE IF EXISTS stock_market.fact_prices_staging")
-    logger.success("Silver Prices loaded to Gold successfully.")
+    if df_prices_pd.empty:
+        logger.warning("Silver prices DataFrame is empty. Nothing to load to Gold.")
+        return
+
+    # Extract unique partition IDs in 'YYYYMM' format based on dates
+    dates = df_prices_pd["date"].astype(str)
+    affected_partitions = dates.apply(lambda x: x.replace("-", "")[:6]).unique().tolist()
+
+    for partition in affected_partitions:
+        logger.info(f"Dropping partition '{partition}' in ClickHouse fact_prices table...")
+        client.command(f"ALTER TABLE stock_market.fact_prices DROP PARTITION '{partition}'")
+
+    logger.info("Inserting new/updated prices into ClickHouse fact_prices...")
+    client.insert_df("stock_market.fact_prices", df_prices_pd)
+    logger.success("Silver prices loaded to gold successfully.")
 
 
 def _load_metadata_to_gold(spark: SparkSession, client: Client) -> None:
@@ -58,7 +71,7 @@ def _load_metadata_to_gold(spark: SparkSession, client: Client) -> None:
         col("extraction_date"),
         col("ingestion_timestamp"),
     )
-    df_metadata_pd = df_metadata.toPandas()
+    df_metadata_pd = cast("pd.DataFrame", df_metadata.toPandas())
 
     client.command("CREATE TABLE IF NOT EXISTS stock_market.dim_companies_staging AS stock_market.dim_companies")
     client.command("TRUNCATE TABLE stock_market.dim_companies_staging")
