@@ -70,6 +70,9 @@ def _load_metadata_to_gold(spark: SparkSession, client: Client) -> None:
         col("dividend_yield"),
         col("extraction_date"),
         col("ingestion_timestamp"),
+        col("start_date"),
+        col("end_date"),
+        col("is_active"),
     )
     df_metadata_pd = cast("pd.DataFrame", df_metadata.toPandas())
 

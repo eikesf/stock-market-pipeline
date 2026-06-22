@@ -7,6 +7,7 @@ from loguru import logger
 from pyspark.sql.types import (
     DateType,
     DecimalType,
+    DoubleType,
     IntegerType,
     LongType,
     StringType,
@@ -16,6 +17,27 @@ from pyspark.sql.types import (
 )
 
 from src.streaming.gold import main
+
+METADATA_SCHEMA = StructType(
+    [
+        StructField("ticker", StringType(), True),
+        StructField("short_name", StringType(), True),
+        StructField("sector", StringType(), True),
+        StructField("industry", StringType(), True),
+        StructField("country", StringType(), True),
+        StructField("isin", StringType(), True),
+        StructField("full_time_employees", IntegerType(), True),
+        StructField("exchange", StringType(), True),
+        StructField("market_cap", LongType(), True),
+        StructField("currency", StringType(), True),
+        StructField("dividend_yield", DoubleType(), True),
+        StructField("extraction_date", DateType(), True),
+        StructField("ingestion_timestamp", StringType(), True),
+        StructField("start_date", DateType(), True),
+        StructField("end_date", DateType(), True),
+        StructField("is_active", IntegerType(), True),
+    ]
+)
 
 
 def test_gold_load_success(spark_session, tmp_path):
@@ -60,11 +82,16 @@ def test_gold_load_success(spark_session, tmp_path):
             "dividend_yield": [0.005],
             "extraction_date": [date(2026, 5, 28)],
             "ingestion_timestamp": ["2026-05-28 10:00:00"],
+            "start_date": [date(2026, 5, 28)],
+            "end_date": [None],
+            "is_active": [1],
         }
     )
 
     spark_session.createDataFrame(df_prices).write.format("delta").mode("overwrite").save(str(silver_prices_dir))
-    spark_session.createDataFrame(df_metadata).write.format("delta").mode("overwrite").save(str(silver_metadata_dir))
+    spark_session.createDataFrame(df_metadata, schema=METADATA_SCHEMA).write.format("delta").mode("overwrite").save(
+        str(silver_metadata_dir)
+    )
 
     mock_client = MagicMock()
 
@@ -158,11 +185,16 @@ def test_gold_clickhouse_interaction_failure(spark_session, tmp_path):
             "dividend_yield": [0.005],
             "extraction_date": [date(2026, 5, 28)],
             "ingestion_timestamp": ["2026-05-28 10:00:00"],
+            "start_date": [date(2026, 5, 28)],
+            "end_date": [None],
+            "is_active": [1],
         }
     )
 
     spark_session.createDataFrame(df_prices).write.format("delta").mode("overwrite").save(str(silver_prices_dir))
-    spark_session.createDataFrame(df_metadata).write.format("delta").mode("overwrite").save(str(silver_metadata_dir))
+    spark_session.createDataFrame(df_metadata, schema=METADATA_SCHEMA).write.format("delta").mode("overwrite").save(
+        str(silver_metadata_dir)
+    )
 
     mock_client = MagicMock()
     mock_client.command.side_effect = Exception("Simulated ClickHouse connection failure")
@@ -231,6 +263,9 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
             "dividend_yield",
             "extraction_date",
             "ingestion_timestamp",
+            "start_date",
+            "end_date",
+            "is_active",
         ]
     )
 
@@ -250,28 +285,10 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
         ]
     )
 
-    metadata_schema = StructType(
-        [
-            StructField("ticker", StringType(), True),
-            StructField("short_name", StringType(), True),
-            StructField("sector", StringType(), True),
-            StructField("industry", StringType(), True),
-            StructField("country", StringType(), True),
-            StructField("isin", StringType(), True),
-            StructField("full_time_employees", IntegerType(), True),
-            StructField("exchange", StringType(), True),
-            StructField("market_cap", LongType(), True),
-            StructField("currency", StringType(), True),
-            StructField("dividend_yield", DecimalType(10, 2), True),
-            StructField("extraction_date", DateType(), True),
-            StructField("ingestion_timestamp", TimestampType(), True),
-        ]
-    )
-
     spark_session.createDataFrame(df_prices, schema=prices_schema).write.format("delta").mode("overwrite").save(
         str(silver_prices_dir)
     )
-    spark_session.createDataFrame(df_metadata, schema=metadata_schema).write.format("delta").mode("overwrite").save(
+    spark_session.createDataFrame(df_metadata, schema=METADATA_SCHEMA).write.format("delta").mode("overwrite").save(
         str(silver_metadata_dir)
     )
 
@@ -345,11 +362,16 @@ def test_gold_date_from_arguments(spark_session, tmp_path):
             "dividend_yield": [0.005],
             "extraction_date": [date(2026, 5, 28)],
             "ingestion_timestamp": ["2026-05-28 10:00:00"],
+            "start_date": [date(2026, 5, 28)],
+            "end_date": [None],
+            "is_active": [1],
         }
     )
 
     spark_session.createDataFrame(df_prices).write.format("delta").mode("overwrite").save(str(silver_prices_dir))
-    spark_session.createDataFrame(df_metadata).write.format("delta").mode("overwrite").save(str(silver_metadata_dir))
+    spark_session.createDataFrame(df_metadata, schema=METADATA_SCHEMA).write.format("delta").mode("overwrite").save(
+        str(silver_metadata_dir)
+    )
 
     mock_client = MagicMock()
 
@@ -485,9 +507,14 @@ def test_gold_missing_prices_delta_table(spark_session, tmp_path):
             "dividend_yield": [0.005],
             "extraction_date": [date(2026, 5, 28)],
             "ingestion_timestamp": ["2026-05-28 10:00:00"],
+            "start_date": [date(2026, 5, 28)],
+            "end_date": [None],
+            "is_active": [1],
         }
     )
-    spark_session.createDataFrame(df_metadata).write.format("delta").mode("overwrite").save(str(silver_metadata_dir))
+    spark_session.createDataFrame(df_metadata, schema=METADATA_SCHEMA).write.format("delta").mode("overwrite").save(
+        str(silver_metadata_dir)
+    )
 
     mock_client = MagicMock()
     captured_logs = []
@@ -604,11 +631,14 @@ def test_gold_selective_loading(spark_session, tmp_path):
                 "dividend_yield": [0.005],
                 "extraction_date": [date(2026, 5, 28)],
                 "ingestion_timestamp": ["2026-05-28 10:00:00"],
+                "start_date": [date(2026, 5, 28)],
+                "end_date": [None],
+                "is_active": [1],
             }
         )
 
         spark_session.createDataFrame(df_prices).write.format("delta").mode("overwrite").save(str(silver_prices_dir))
-        spark_session.createDataFrame(df_metadata).write.format("delta").mode("overwrite").save(
+        spark_session.createDataFrame(df_metadata, schema=METADATA_SCHEMA).write.format("delta").mode("overwrite").save(
             str(silver_metadata_dir)
         )
 
