@@ -1,4 +1,3 @@
-from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -67,7 +66,7 @@ class TestMetadataGenerator:
             df_final = df_self
 
         with patch("pandas.DataFrame.to_parquet", get_df):
-            run_metadata_generator()
+            run_metadata_generator("2026-05-28")
 
         assert df_final is not None
         assert df_final.shape[0] == 10
@@ -130,7 +129,7 @@ class TestMetadataGenerator:
             df_final = df_self
 
         with patch("pandas.DataFrame.to_parquet", get_df):
-            run_metadata_generator()
+            run_metadata_generator("2026-05-28")
 
         assert df_final is not None
         assert df_final.shape[0] == 1
@@ -150,7 +149,7 @@ class TestMetadataGenerator:
         mock_get_all_tickers.return_value = {"NASDAQ": [], "B3": []}
 
         with pytest.raises(SystemExit) as exc_info:
-            run_metadata_generator()
+            run_metadata_generator("2026-05-28")
 
         assert exc_info.value.code == 0
         mock_to_parquet.assert_not_called()
@@ -163,7 +162,7 @@ class TestMetadataGenerator:
         mock_ticker.side_effect = Exception("API offline")
 
         with pytest.raises(SystemExit) as exc_info:
-            run_metadata_generator()
+            run_metadata_generator("2026-05-28")
 
         assert exc_info.value.code == 0
         mock_to_parquet.assert_not_called()
@@ -193,7 +192,7 @@ class TestMetadataGenerator:
             df_final = df_self
 
         with patch("pandas.DataFrame.to_parquet", get_df):
-            run_metadata_generator()
+            run_metadata_generator("2026-05-28")
 
         assert df_final is not None
         assert df_final.shape[0] == 1
@@ -202,7 +201,7 @@ class TestMetadataGenerator:
         assert df_final["sector"].iloc[0] == "N/A"
         assert df_final["market_cap"].iloc[0] == 0
         assert df_final["dividend_yield"].iloc[0] == 0.0
-        assert df_final["extraction_date"].iloc[0] == datetime.now().strftime("%Y-%m-%d")
+        assert df_final["extraction_date"].iloc[0] == "2026-05-28"
 
     def test_run_metadata_generator_write_failure(self, mock_to_parquet, mock_ticker, mock_get_all_tickers):
         """
@@ -229,7 +228,49 @@ class TestMetadataGenerator:
         mock_to_parquet.side_effect = Exception("Disk full")
 
         with pytest.raises(SystemExit) as exc_info:
-            run_metadata_generator()
+            run_metadata_generator("2026-05-28")
 
         assert exc_info.value.code == 1
         mock_to_parquet.assert_called_once()
+
+    def test_run_metadata_generator_default_date(self, mock_to_parquet, mock_ticker, mock_get_all_tickers):
+        """Test run_metadata_generator with None as exec_date to cover today's date fallback."""
+        mock_get_all_tickers.return_value = {"NASDAQ": ["AAPL"]}
+        mock_ticker.return_value.info = {"shortName": "Apple Inc."}
+
+        df_final = None
+
+        def get_df(df_self, *args, **kwargs):
+            nonlocal df_final
+            df_final = df_self
+
+        with patch("pandas.DataFrame.to_parquet", get_df):
+            run_metadata_generator(None)
+
+        assert df_final is not None
+        assert df_final.shape[0] == 1
+        assert "AAPL" in df_final["ticker"].values
+
+    @patch("src.producer.metadata_generator.run_metadata_generator")
+    def test_metadata_generator_main_valid_date(
+        self, mock_run_metadata, mock_to_parquet, mock_ticker, mock_get_all_tickers
+    ):
+        """Test metadata generator main entrypoint with valid date parameter."""
+        from src.producer.metadata_generator import main
+
+        with patch("sys.argv", ["metadata_generator.py", "--date", "2026-05-26"]):
+            main()
+            mock_run_metadata.assert_called_once_with("2026-05-26")
+
+    @patch("src.producer.metadata_generator.run_metadata_generator")
+    def test_metadata_generator_main_invalid_date(
+        self, mock_run_metadata, mock_to_parquet, mock_ticker, mock_get_all_tickers
+    ):
+        """Test metadata generator main entrypoint with invalid date parameter (exits with code 1)."""
+        from src.producer.metadata_generator import main
+
+        with patch("sys.argv", ["metadata_generator.py", "--date", "invalid-date"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+            mock_run_metadata.assert_not_called()

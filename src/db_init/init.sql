@@ -24,10 +24,19 @@ CREATE TABLE IF NOT EXISTS stock_market.dim_companies
     currency            LowCardinality(String)        COMMENT 'Currency in which the stock is traded (e.g., USD, BRL)',
     dividend_yield      Decimal(10,2)                 COMMENT 'Annual dividend yield as a percentage',
     extraction_date     Date                          COMMENT 'Date when the metadata was extracted from yfinance',
-    ingestion_timestamp DateTime                      COMMENT 'Timestamp of ingestion into the Bronze layer'
+    ingestion_timestamp DateTime                      COMMENT 'Timestamp of ingestion into the Bronze layer',
+    start_date          Date32                        COMMENT 'Date when the record becomes active',
+    end_date            Nullable(Date32)              COMMENT 'Date when the record becomes inactive',
+    is_active           UInt8                         COMMENT 'Flag indicating whether the record is currently active (1 = active, 0 = inactive)'
 )
 ENGINE = MergeTree()
-ORDER BY ticker;
+ORDER BY (ticker, start_date);
+
+-- 1.1 Active Companies View (Current Snapshot)
+CREATE VIEW IF NOT EXISTS stock_market.v_companies_active AS
+SELECT *
+FROM stock_market.dim_companies
+WHERE is_active = 1;
 
 -- 2. Fact Table (Daily Prices)
 CREATE TABLE IF NOT EXISTS stock_market.fact_prices

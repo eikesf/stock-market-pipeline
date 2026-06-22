@@ -1,3 +1,4 @@
+import logging
 import shutil
 import tempfile
 from pathlib import Path
@@ -5,6 +6,9 @@ from pathlib import Path
 import pytest
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
+
+# Suppress py4j info/warning logs during teardown to avoid ValueError: I/O operation on closed file
+logging.getLogger("py4j").setLevel(logging.ERROR)
 
 
 @pytest.fixture(scope="session")
@@ -34,5 +38,11 @@ def spark_session():
     yield spark
 
     spark.stop()
+
+    # Force garbage collection to clean up Py4J objects before logging handlers are closed
+    import gc
+
+    gc.collect()
+
     if Path(temp_dir).exists():
         shutil.rmtree(temp_dir)

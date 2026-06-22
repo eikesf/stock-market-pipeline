@@ -1,12 +1,13 @@
-import importlib
-import sys
 from datetime import date, datetime
 from decimal import Decimal
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
+from loguru import logger
 from pyspark.sql.types import DateType, DecimalType, LongType, StringType, TimestampType
+
+from src.streaming.silver import main
 
 
 def test_silver_prices_cleaning_and_casting(spark_session, tmp_path):
@@ -39,15 +40,12 @@ def test_silver_prices_cleaning_and_casting(spark_session, tmp_path):
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_dir))
 
     with (
-        patch("src.producer.config.BRONZE_PRICES_DIR", bronze_dir),
-        patch("src.producer.config.SILVER_PRICES_DIR", silver_dir),
-        patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
+        patch("src.streaming.silver.BRONZE_PRICES_DIR", bronze_dir),
+        patch("src.streaming.silver.SILVER_PRICES_DIR", silver_dir),
+        patch("src.streaming.silver.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        if "src.streaming.silver" in sys.modules:
-            importlib.reload(sys.modules["src.streaming.silver"])
-        else:
-            importlib.import_module("src.streaming.silver")
+        main()
 
     df_silver = spark_session.read.format("delta").load(str(silver_dir))
     row = df_silver.collect()[0]
@@ -111,15 +109,12 @@ def test_silver_prices_null_dropping(spark_session, tmp_path):
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_dir))
 
     with (
-        patch("src.producer.config.BRONZE_PRICES_DIR", bronze_dir),
-        patch("src.producer.config.SILVER_PRICES_DIR", silver_dir),
-        patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
+        patch("src.streaming.silver.BRONZE_PRICES_DIR", bronze_dir),
+        patch("src.streaming.silver.SILVER_PRICES_DIR", silver_dir),
+        patch("src.streaming.silver.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        if "src.streaming.silver" in sys.modules:
-            importlib.reload(sys.modules["src.streaming.silver"])
-        else:
-            importlib.import_module("src.streaming.silver")
+        main()
 
     df_silver = spark_session.read.format("delta").load(str(silver_dir))
     assert df_silver.count() == 1
@@ -156,15 +151,12 @@ def test_silver_prices_deduplication(spark_session, tmp_path):
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_dir))
 
     with (
-        patch("src.producer.config.BRONZE_PRICES_DIR", bronze_dir),
-        patch("src.producer.config.SILVER_PRICES_DIR", silver_dir),
-        patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
+        patch("src.streaming.silver.BRONZE_PRICES_DIR", bronze_dir),
+        patch("src.streaming.silver.SILVER_PRICES_DIR", silver_dir),
+        patch("src.streaming.silver.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        if "src.streaming.silver" in sys.modules:
-            importlib.reload(sys.modules["src.streaming.silver"])
-        else:
-            importlib.import_module("src.streaming.silver")
+        main()
 
     df_silver = spark_session.read.format("delta").load(str(silver_dir))
     assert df_silver.count() == 1
@@ -202,25 +194,20 @@ def test_silver_prices_failure(spark_session, tmp_path):
     df_bronze_spark = spark_session.createDataFrame(df_bronze)
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_dir))
 
-    from loguru import logger
-
     # Capture logs to assert expected error messages on pipeline failure
     captured_logs = []
     sink_id = logger.add(lambda msg: captured_logs.append(str(msg)), level="ERROR")
 
     try:
         with (
-            patch("src.producer.config.BRONZE_PRICES_DIR", bronze_dir),
-            patch("src.producer.config.SILVER_PRICES_DIR", silver_dir),
-            patch("src.streaming.spark_session.create_spark_session", return_value=spark_session),
-            patch("src.streaming.utils.write_delta_table", side_effect=Exception("Simulated writing failure")),
+            patch("src.streaming.silver.BRONZE_PRICES_DIR", bronze_dir),
+            patch("src.streaming.silver.SILVER_PRICES_DIR", silver_dir),
+            patch("src.streaming.silver.create_spark_session", return_value=spark_session),
+            patch("src.streaming.silver.write_delta_table", side_effect=Exception("Simulated writing failure")),
             patch.object(spark_session, "stop"),
             pytest.raises(SystemExit) as exc_info,
         ):
-            if "src.streaming.silver" in sys.modules:
-                importlib.reload(sys.modules["src.streaming.silver"])
-            else:
-                importlib.import_module("src.streaming.silver")
+            main()
     finally:
         logger.remove(sink_id)
 
@@ -230,3 +217,77 @@ def test_silver_prices_failure(spark_session, tmp_path):
     log_content = "".join(captured_logs)
     assert "Failed to process Silver layer" in log_content
     assert "Simulated writing failure" in log_content
+
+
+def test_silver_date_from_arguments(spark_session, tmp_path):
+    """
+    Test that Silver prices pipeline parses --date from CLI arguments correctly.
+    """
+    bronze_dir = tmp_path / "bronze"
+    bronze_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_dir = tmp_path / "silver"
+    silver_dir.mkdir(parents=True, exist_ok=True)
+
+    df_bronze = pd.DataFrame(
+        {
+            "date": ["2026-05-28"],
+            "ticker": ["AAPL"],
+            "open": [150.0],
+            "high": [152.0],
+            "low": [149.0],
+            "close": [151.0],
+            "adj_close": [151.0],
+            "volume": [1000],
+            "dividends": [0.0],
+            "stock_splits": [0.0],
+            "ingestion_timestamp": ["2026-05-28 10:00:00"],
+        }
+    )
+
+    df_bronze_spark = spark_session.createDataFrame(df_bronze)
+    df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_dir))
+
+    with (
+        patch("src.streaming.silver.BRONZE_PRICES_DIR", bronze_dir),
+        patch("src.streaming.silver.SILVER_PRICES_DIR", silver_dir),
+        patch("src.streaming.silver.create_spark_session", return_value=spark_session),
+        patch("sys.argv", ["silver.py", "--date", "2026-05-28"]),
+        patch.object(spark_session, "stop"),
+    ):
+        main()
+
+    df_silver = spark_session.read.format("delta").load(str(silver_dir))
+    assert df_silver.count() == 1
+
+
+def test_silver_invalid_date_format(spark_session, tmp_path):
+    """
+    Test that an invalid date format passed to --date exits with code 1.
+    """
+    bronze_dir = tmp_path / "bronze"
+    bronze_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_dir = tmp_path / "silver"
+    silver_dir.mkdir(parents=True, exist_ok=True)
+
+    # Capture logs to assert expected error messages on pipeline failure
+    captured_logs = []
+    sink_id = logger.add(lambda msg: captured_logs.append(str(msg)), level="ERROR")
+
+    try:
+        with (
+            patch("src.streaming.silver.BRONZE_PRICES_DIR", bronze_dir),
+            patch("src.streaming.silver.SILVER_PRICES_DIR", silver_dir),
+            patch("src.streaming.silver.create_spark_session", return_value=spark_session),
+            patch("sys.argv", ["silver.py", "--date", "invalid_date_format"]),
+            patch.object(spark_session, "stop"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+    finally:
+        logger.remove(sink_id)
+
+    assert exc_info.value.code == 1
+    log_content = "".join(captured_logs)
+    assert "Invalid date format" in log_content

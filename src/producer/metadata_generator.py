@@ -1,6 +1,7 @@
+import argparse
 import sys
 import time
-from datetime import datetime
+from datetime import date
 
 import pandas as pd
 import yfinance as yf
@@ -10,10 +11,13 @@ from src.producer.tickers import get_all_tickers
 from src.utils.logger import logger
 
 
-def run_metadata_generator() -> None:
+def run_metadata_generator(exec_date: str | None = None, tickers: list[str] | None = None) -> None:
     """Extract company metadata from yFinance and persist to the Landing zone."""
-    # Grab tickers from the dictionary
-    tickers = [ticker for exchange_tickers in get_all_tickers().values() for ticker in exchange_tickers]
+    if exec_date is None:
+        exec_date = date.today().isoformat()
+    # Grab tickers from the dictionary if not provided
+    if not tickers:
+        tickers = [ticker for exchange_tickers in get_all_tickers().values() for ticker in exchange_tickers]
 
     # Empty to store all data
     metadata_records = []
@@ -41,7 +45,7 @@ def run_metadata_generator() -> None:
                 "market_cap": info.get("marketCap", 0),
                 "currency": info.get("currency", "N/A"),
                 "dividend_yield": info.get("dividendYield", 0.0),
-                "extraction_date": datetime.now().strftime("%Y-%m-%d"),
+                "extraction_date": exec_date,
             }
 
             metadata_records.append(record)
@@ -56,7 +60,7 @@ def run_metadata_generator() -> None:
         sys.exit(0)
 
     df_metadata = pd.DataFrame(metadata_records)
-    metadata_path = LANDING_METADATA_DIR / f"ticker_metadata_{datetime.now().strftime('%Y-%m-%d')}.parquet"
+    metadata_path = LANDING_METADATA_DIR / f"ticker_metadata_{exec_date}.parquet"
 
     try:
         # Save the dataframe in parquet format
@@ -67,5 +71,21 @@ def run_metadata_generator() -> None:
         sys.exit(1)
 
 
+def main() -> None:
+    """Main entry point to execute the metadata generator CLI."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--date", type=str, default=date.today().isoformat(), help="Date to download metadata (format: YYYY-MM-DD)"
+    )
+    args = parser.parse_args()
+
+    try:
+        date.fromisoformat(args.date)
+        run_metadata_generator(args.date)
+    except ValueError:
+        logger.error("Invalid date format. Please use YYYY-MM-DD format.")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    run_metadata_generator()
+    main()

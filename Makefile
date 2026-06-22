@@ -2,9 +2,9 @@
 COMPOSE_FILE = docker/docker-compose.yml
 export DOCKER_CLI_HINTS=false
 
-.PHONY: up down build shell lint lint_fix format test test_cov run run_prices run_metadata _prices_flow _metadata_flow run_landing_prices run_landing_metadata \
+.PHONY: up down build shell airflow_up airflow_down lint lint_fix format test test_cov run run_prices run_metadata _prices_flow _metadata_flow run_landing_prices run_landing_metadata \
 		run_bronze_prices run_bronze_metadata run_silver_prices \
-		run_silver_metadata run_gold clean clean_data reset
+		run_silver_metadata run_gold run_gold_prices run_gold_metadata run_maintenance clean clean_data reset
 
 # --- Infrastructure ---
 up: ## Start the Docker environment
@@ -18,6 +18,12 @@ down: ## Stop and remove the Docker environment
 
 shell: ## Access the Python container bash shell
 	docker exec -it python_finance bash
+
+airflow_up: ## Start only the Airflow orchestration services
+	docker compose --env-file .env -f $(COMPOSE_FILE) up -d airflow_postgres airflow_init airflow_apiserver airflow_scheduler airflow_dag_processor
+
+airflow_down: ## Stop only the Airflow orchestration services
+	docker compose --env-file .env -f $(COMPOSE_FILE) stop airflow_postgres airflow_apiserver airflow_scheduler airflow_dag_processor
 
 # --- Quality & Testing ---
 lint: ## Run Ruff linter checks inside the container
@@ -37,9 +43,13 @@ test_cov: ## Run pytest suite with coverage inside the container
 
 # --- Environment Management ---
 clean: ## Stop containers and remove docker volumes (Clickhouse data)
+	@echo "Stopping Docker containers and removing database volumes..."
+	@echo "Note: Local data directory (data/) is preserved."
 	docker compose --env-file .env -f $(COMPOSE_FILE) down --volumes
 
 clean_data: ## Remove the local data directory (landing/, bronze/, silver/)
+	@echo "WARNING: This will permanently delete the local 'data/' directory (landing files, bronze/silver Delta tables, transaction logs, and history)."
+	@printf "Are you sure you want to continue? [y/N]: " && read ans && [ "$$ans" = "y" ] | [ "$$ans" = "Y" ] || (echo "Aborted."; exit 1)
 	rm -rf data/
 
 reset: clean clean_data ## Full reset: remove containers, volumes, and local data	
@@ -57,9 +67,9 @@ _metadata_flow:
 	@$(MAKE) run_bronze_metadata
 	@$(MAKE) run_silver_metadata
 
-run_prices: _prices_flow run_gold ## Run only Prices pipeline
+run_prices: _prices_flow run_gold_prices ## Run only Prices pipeline
 
-run_metadata: _metadata_flow run_gold ## Run only Metadata pipeline
+run_metadata: _metadata_flow run_gold_metadata ## Run only Metadata pipeline
 
 run: _prices_flow _metadata_flow run_gold ## Run the full Medallion pipeline
 	@echo "\nFull pipeline completed successfully."
@@ -82,5 +92,14 @@ run_silver_prices: ## Run only Silver layer for prices
 run_silver_metadata: ## Run only Silver layer for metadata
 	@docker exec -it python_finance python -m src.streaming.silver_metadata
 
-run_gold: ## Run only Gold layer
+run_gold: ## Run only Gold layer (both prices and metadata)
 	@docker exec -it python_finance python -m src.streaming.gold
+
+run_gold_prices: ## Run only Gold layer for prices
+	@docker exec -it python_finance python -m src.streaming.gold --table prices
+
+run_gold_metadata: ## Run only Gold layer for metadata
+	@docker exec -it python_finance python -m src.streaming.gold --table metadata
+
+run_maintenance: # Run Delta Lake table maintenance (Compaction + vacuum)
+	@docker exec -it python_finance python -m src.streaming.maintenance
