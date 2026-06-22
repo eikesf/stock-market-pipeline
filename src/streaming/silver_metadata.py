@@ -2,7 +2,8 @@ import argparse
 import sys
 from datetime import date
 
-from pyspark.sql.functions import col, row_number, trim, upper, when
+from delta.tables import DeltaTable
+from pyspark.sql.functions import col, lit, row_number, trim, upper, when
 from pyspark.sql.window import Window
 
 from src.producer.config import BRONZE_METADATA_DIR, SILVER_METADATA_DIR
@@ -57,13 +58,53 @@ def run_silver_metadata(exec_date: str) -> None:
         window_spec = Window.partitionBy("ticker").orderBy(col("ingestion_timestamp").desc())
 
         metadata_df_silver = (
-            metadata_df_silver.withColumn("rn", row_number().over(window_spec)).filter(col("rn") == 1).drop("rn")
+            metadata_df_silver.withColumn("rn", row_number().over(window_spec))
+            .filter(col("rn") == 1)
+            .drop("rn")
+            .withColumn("start_date", col("extraction_date"))
+            .withColumn("end_date", lit(None).cast("date"))
+            .withColumn("is_active", lit(1).cast("integer"))
         )
 
-        # Writing data to silver delta table
-        write_delta_table(metadata_df_silver, SILVER_METADATA_DIR, mode="overwrite")
+        is_cold_start = not (SILVER_METADATA_DIR / "_delta_log").exists()
 
-        logger.success("Bronze to Silver (Metadata) pipeline completed successfully.")
+        if is_cold_start:
+            # First load
+            write_delta_table(metadata_df_silver, SILVER_METADATA_DIR, mode="overwrite")
+            logger.success("Bronze to Silver (Metadata) cold-start pipeline completed successfully.")
+            return
+        # Incremental load (SCD Type 2)
+        target_delta = DeltaTable.forPath(spark, str(SILVER_METADATA_DIR))
+        target_df = target_delta.toDF().filter(col("is_active") == 1)
+
+        incoming_df = metadata_df_silver.alias("incoming")
+        existing_active = target_df.alias("existing")
+
+        changed_or_new = (
+            incoming_df.join(existing_active, "ticker", "left")
+            .filter(
+                existing_active.ticker.isNull()
+                | (incoming_df.short_name != existing_active.short_name)
+                | (incoming_df.sector != existing_active.sector)
+                | (incoming_df.industry != existing_active.industry)
+                | (incoming_df.country != existing_active.country)
+                | (incoming_df.isin != existing_active.isin)
+                | (incoming_df.full_time_employees != existing_active.full_time_employees)
+                | (incoming_df.exchange != existing_active.exchange)
+                | (incoming_df.market_cap != existing_active.market_cap)
+                | (incoming_df.currency != existing_active.currency)
+                | (incoming_df.dividend_yield != existing_active.dividend_yield)
+            )
+            .select("incoming.*")
+        )
+
+        target_delta.alias("target").merge(
+            changed_or_new.alias("source"), "target.ticker = source.ticker AND target.is_active = 1"
+        ).whenMatchedUpdate(set={"is_active": lit(0), "end_date": col("source.extraction_date")}).execute()
+
+        write_delta_table(changed_or_new, SILVER_METADATA_DIR, mode="append")
+        logger.success("Bronze to Silver (Metadata) incremental SCD Type 2 pipeline completed successfully")
+        return
 
     except Exception as e:
         logger.exception(f"Failed to process Silver layer metadata: {e}")
