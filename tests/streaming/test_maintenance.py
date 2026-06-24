@@ -28,12 +28,12 @@ def test_run_maintenance_success(mock_exists, mock_delta_table_cls, mock_create_
     # Assert retention config is set
     mock_spark.conf.set.assert_called_once_with("spark.databricks.delta.retentionDurationCheck.enabled", "false")
 
-    # Assert DeltaTable.forPath is called for all 4 tables
-    assert mock_delta_table_cls.forPath.call_count == 4
+    # Assert DeltaTable.forPath is called for all 5 tables
+    assert mock_delta_table_cls.forPath.call_count == 5
 
-    # Assert compaction and vacuum are called for all 4 tables
-    assert mock_dt.optimize.return_value.executeCompaction.call_count == 4
-    assert mock_dt.vacuum.call_count == 4
+    # Assert compaction and vacuum are called for all 5 tables
+    assert mock_dt.optimize.return_value.executeCompaction.call_count == 5
+    assert mock_dt.vacuum.call_count == 5
     mock_dt.vacuum.assert_called_with(24.0)
 
 

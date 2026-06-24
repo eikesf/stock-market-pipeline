@@ -7,7 +7,7 @@ from loguru import logger
 from pyspark.sql.functions import col
 from pyspark.sql.types import DateType, DecimalType, IntegerType, LongType, StringType, TimestampType
 
-from src.streaming.silver_metadata import main
+from src.streaming.silver_metadata import main, run_silver_metadata, run_silver_metrics
 
 
 def test_silver_metadata_cleaning_and_casting(spark_session, tmp_path):
@@ -47,7 +47,7 @@ def test_silver_metadata_cleaning_and_casting(spark_session, tmp_path):
         patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        main()
+        run_silver_metadata("2026-05-28")
 
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
     assert df_silver_metadata.count() == 1
@@ -71,13 +71,7 @@ def test_silver_metadata_cleaning_and_casting(spark_session, tmp_path):
     assert isinstance(df_silver_metadata.schema["exchange"].dataType, StringType)
     assert isinstance(df_silver_metadata.schema["extraction_date"].dataType, DateType)
     assert isinstance(df_silver_metadata.schema["ingestion_timestamp"].dataType, TimestampType)
-
     assert isinstance(df_silver_metadata.schema["full_time_employees"].dataType, IntegerType)
-    assert isinstance(df_silver_metadata.schema["market_cap"].dataType, LongType)
-
-    assert isinstance(df_silver_metadata.schema["dividend_yield"].dataType, DecimalType)
-    assert df_silver_metadata.schema["dividend_yield"].dataType.precision == 10
-    assert df_silver_metadata.schema["dividend_yield"].dataType.scale == 2
 
     assert isinstance(df_silver_metadata.schema["start_date"].dataType, DateType)
     assert isinstance(df_silver_metadata.schema["end_date"].dataType, DateType)
@@ -182,7 +176,7 @@ def test_silver_metadata_null_dropping(spark_session, tmp_path):
         patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        main()
+        run_silver_metadata("2026-05-28")
 
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
     assert df_silver_metadata.count() == 1
@@ -320,7 +314,7 @@ def test_silver_metadata_exchange_standardization(spark_session, tmp_path):
         patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        main()
+        run_silver_metadata("2026-05-28")
 
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
     assert df_silver_metadata.count() == 7
@@ -396,7 +390,7 @@ def test_silver_metadata_deduplication_by_ticker(spark_session, tmp_path):
         patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
-        main()
+        run_silver_metadata("2026-05-28")
 
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
     assert df_silver_metadata.count() == 3
@@ -453,7 +447,7 @@ def test_silver_metadata_failure(spark_session, tmp_path):
             patch.object(spark_session, "stop"),
             pytest.raises(SystemExit) as exc_info,
         ):
-            main()
+            run_silver_metadata("2026-05-28")
     finally:
         logger.remove(sink_id)
 
@@ -500,7 +494,7 @@ def test_silver_metadata_date_from_arguments(spark_session, tmp_path):
         patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
         patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
         patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
-        patch("sys.argv", ["silver_metadata.py", "--date", "2026-05-28"]),
+        patch("sys.argv", ["silver_metadata.py", "--date", "2026-05-28", "--table", "metadata"]),
         patch.object(spark_session, "stop"),
     ):
         main()
@@ -550,7 +544,7 @@ def _run_silver_metadata_step(spark_session, bronze_dir, silver_dir, df_bronze, 
         patch("sys.argv", ["silver_metadata.py", "--date", date_str]),
         patch.object(spark_session, "stop"),
     ):
-        main()
+        run_silver_metadata(date_str)
     return spark_session.read.format("delta").load(str(silver_dir))
 
 
@@ -705,3 +699,79 @@ def test_silver_metadata_scd_type_2_history(spark_session, tmp_path):
             "end_date": None,
         },
     )
+
+
+def test_silver_metrics_cleaning_and_casting(spark_session, tmp_path):
+    """Test that the Silver metrics pipeline correctly cleans and casts columns."""
+    bronze_metadata_dir = tmp_path / "bronze_metadata"
+    bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_dir = tmp_path / "silver_metrics"
+    silver_metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    df_bronze = pd.DataFrame(
+        {
+            "ticker": [" aapl "],
+            "dividend_yield": [0.0051],
+            "trailing_pe": [15.42],
+            "market_cap": [2600000000000],
+            "peg_ratio": [1.5],
+            "price_to_book": [2.5],
+            "enterprise_to_ebitda": [12.3],
+            "enterprise_to_ebit": [14.1],
+            "book_value": [35.2],
+            "trailing_eps": [6.5],
+            "price_to_sales": [7.2],
+            "operating_margins": [0.25],
+            "asset_turnover": [0.8],
+            "shares_outstanding": [15000000000],
+            "ebitda": [100000000000],
+            "total_debt": [120000000000],
+            "total_cash": [80000000000],
+            "debt_to_equity": [1.5],
+            "roa": [0.12],
+            "roe": [0.28],
+            "current_ratio": [1.8],
+            "gross_margins": [0.42],
+            "ebitda_margins": [0.32],
+            "profit_margins": [0.21],
+            "net_income_to_common": [80000000000],
+            "extraction_date": ["2026-05-28"],
+            "ingestion_timestamp": ["2026-05-28 10:00:00"],
+        }
+    )
+
+    df_bronze_spark = spark_session.createDataFrame(df_bronze)
+    df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
+
+    # Also need a dummy silver_metadata_dir so that run_silver_metadata doesn't fail
+    silver_metadata_dir = tmp_path / "silver_metadata"
+    silver_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    with (
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_DIR", silver_metrics_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+        patch.object(spark_session, "stop"),
+    ):
+        run_silver_metrics("2026-05-28")
+
+    df_silver_metrics = spark_session.read.format("delta").load(str(silver_metrics_dir))
+    assert df_silver_metrics.count() == 1
+    row = df_silver_metrics.collect()[0]
+
+    assert row.ticker == "AAPL"
+    assert row.shares_outstanding == 15000000000
+    assert row.market_cap == 2600000000000
+    assert row.extraction_date == date(2026, 5, 28)
+
+    # Check decimal datatypes
+    assert isinstance(df_silver_metrics.schema["dividend_yield"].dataType, DecimalType)
+    assert df_silver_metrics.schema["dividend_yield"].dataType.precision == 10
+    assert df_silver_metrics.schema["dividend_yield"].dataType.scale == 4
+
+    assert isinstance(df_silver_metrics.schema["trailing_pe"].dataType, DecimalType)
+    assert df_silver_metrics.schema["trailing_pe"].dataType.precision == 10
+    assert df_silver_metrics.schema["trailing_pe"].dataType.scale == 4
+
+    assert isinstance(df_silver_metrics.schema["market_cap"].dataType, LongType)

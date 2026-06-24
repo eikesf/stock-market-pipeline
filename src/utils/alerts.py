@@ -11,7 +11,15 @@ MAX_EXCEPTION_LENGTH = 800
 
 
 def _extract_operator_name(ti: object) -> str:
-    """Helper to extract the operator name from a task instance."""
+    """Extract the operator name from a task instance.
+
+    Args:
+        ti: The task instance object.
+
+    Returns:
+        The string name of the operator class, falling back to 'PythonOperator'
+        if not found or is a mock object.
+    """
     ti_op = getattr(ti, "operator", None)
     if isinstance(ti_op, str):
         return ti_op
@@ -31,7 +39,17 @@ def _extract_operator_name(ti: object) -> str:
 
 
 def _extract_duration(ti: object) -> str:
-    """Helper to extract task duration from a task instance."""
+    """Extract task execution duration from a task instance.
+
+    Calculates the duration using start_date and end_date if the duration
+    attribute is not directly set.
+
+    Args:
+        ti: The task instance object.
+
+    Returns:
+        A string formatted duration (e.g. '1.25s'), or 'Not registered' if unavailable.
+    """
     ti_duration = getattr(ti, "duration", None)
     if isinstance(ti_duration, (int, float)):
         return f"{ti_duration:.2f}s"
@@ -45,7 +63,16 @@ def _extract_duration(ti: object) -> str:
 
 
 def _extract_execution_date(context: dict[str, Any]) -> str:
-    """Helper to extract the execution date with fallbacks from Airflow context."""
+    """Extract the execution date with fallbacks from Airflow context.
+
+    Checks logical_date, ds, and dag_run attributes to determine the target date.
+
+    Args:
+        context: The Airflow callback context dictionary.
+
+    Returns:
+        A string representation of the execution date, or 'Not set'.
+    """
     logical_date = context.get("logical_date")
     if logical_date is not None:
         return str(logical_date)
@@ -72,7 +99,18 @@ def _extract_execution_date(context: dict[str, Any]) -> str:
 
 
 def _extract_alert_context(context: dict[str, Any]) -> dict[str, Any]:
-    """Helper to extract common alerting fields from the Airflow callback context."""
+    """Extract common alerting fields from the Airflow callback context.
+
+    Gathers details about the task run, operator, trial counts, dates, and
+    logs to construct a unified metadata dictionary.
+
+    Args:
+        context: The Airflow callback context dictionary.
+
+    Returns:
+        A dictionary containing keys for alerts construction (e.g., 'dag_id',
+        'task_id', 'operator_name', 'try_number', 'log_url', etc.).
+    """
     ti = context["task_instance"]
     dag = context["dag"]
 
@@ -112,6 +150,9 @@ def send_airflow_failure_email(context: dict[str, Any]) -> None:
     """Callback function to send an email notification when an Airflow task fails.
 
     Extracts detailed failure context and delivers a formatted HTML message.
+
+    Args:
+        context: The Airflow callback context dictionary.
     """
     logger.info(f"Failure callback context keys: {list(context.keys())}")
 
@@ -190,7 +231,11 @@ def send_airflow_failure_email(context: dict[str, Any]) -> None:
 
 
 def send_airflow_failure_discord(context: dict[str, Any]) -> None:
-    """Callback function to send an alert notification to a Discord channel on task failure."""
+    """Callback function to send an alert notification to Discord on task failure.
+
+    Args:
+        context: The Airflow callback context dictionary.
+    """
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
 
     if not webhook_url:

@@ -8,7 +8,17 @@ from src.utils.logger import logger
 
 
 def create_spark_session() -> SparkSession:
-    """Create a Spark Session with Delta Lake configuration."""
+    """Create a Spark Session with Delta Lake configuration.
+
+    Configures local filesystems, Delta extensions, catalogs, suppresses noisy
+    Spark logs during initialization, and returns the session instance.
+
+    Returns:
+        The active SparkSession instance.
+
+    Raises:
+        SystemExit: If Spark Session initialization fails.
+    """
     logger.info("Initializing Spark Session...")
     spark = None
     try:
