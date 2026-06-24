@@ -110,6 +110,7 @@ def deduplicate_silver_metadata(**context: Any) -> None:
     exec_date = context["ds"]
     run_silver_metadata(exec_date=exec_date)
 
+
 @task(task_id="task_load_gold_metadata", pool="spark_write_pool")
 def load_gold_metadata(**context: Any) -> None:
     """Load deduplicated stock metadata from Silver Layer to Gold Layer using Spark."""
