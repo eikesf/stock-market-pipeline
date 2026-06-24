@@ -69,6 +69,8 @@ graph LR
         T_EXT_M1["task_extract_metadata<br/>(Landing · JSON)"]
         T_BRZ_M1["task_ingest_bronze_metadata<br/>(Bronze · Delta)"]
         T_SLV_M["task_deduplicate_silver_metadata<br/>(Silver · Delta)"]
+        
+        T_GLD_MET["task_load_gold_metrics<br/>(Gold · Direct)"]
         T_GLD_M["task_load_gold_metadata<br/>(Gold · Staging)"]
 
         T_EXT_M1 -->|"PySpark"| T_BRZ_M1
