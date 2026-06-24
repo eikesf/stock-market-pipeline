@@ -1,66 +1,89 @@
--- ============================================================
--- ClickHouse DDL - Gold Layer (OLAP)
--- Engine: MergeTree
+-- ============================================================================
+-- ClickHouse Migration: Issue #30 - Company Investment Metrics & Separated Table
+-- ============================================================================
 --
--- Deduplication is handled in the Silver layer (PySpark
--- window functions)
--- ============================================================
+-- PURPOSE:
+-- 1. Remove volatile metrics (market_cap, dividend_yield) from `dim_companies` to prevent SCD Type 2 bloat.
+-- 2. Recreate `v_companies_active` to reflect the updated schema of `dim_companies`.
+-- 3. Create the new `fact_company_metrics` table to hold historical financial snapshot metrics.
+-- 4. Create the new `v_companies_performance` view to calculate financial ratios.
+--
+-- EXECUTION:
+-- clickhouse-client --queries-file migration_20260623_fact_company_metrics.sql
+-- ============================================================================
 
--- Database creation
-CREATE DATABASE IF NOT EXISTS stock_market;
+-- 1. Remove volatile metrics from dim_companies
+ALTER TABLE stock_market.dim_companies DROP COLUMN IF EXISTS market_cap;
+ALTER TABLE stock_market.dim_companies DROP COLUMN IF EXISTS dividend_yield;
+-- 2. Deduplicate dim_companies records (merge identical consecutive versions)
+-- Now that market_cap and dividend_yield are removed, we have redundant history rows.
+-- We use a staging table to rebuild dim_companies with grouped/merged periods.
+DROP TABLE IF EXISTS stock_market.dim_companies_dedup;
+CREATE TABLE stock_market.dim_companies_dedup AS stock_market.dim_companies;
 
--- 1. Dimension Table (Company Metadata)
-CREATE TABLE IF NOT EXISTS stock_market.dim_companies
-(
-    ticker              LowCardinality(String)        COMMENT 'Stock ticker symbol (e.g., AAPL, GOOGL)',
-    short_name          String                        COMMENT 'Company display name',
-    sector              LowCardinality(String)        COMMENT 'GICS sector classification',
-    industry            LowCardinality(String)        COMMENT 'Industry classification',
-    country             LowCardinality(String)        COMMENT 'Country where the company is based',
-    isin                String                        COMMENT 'International Securities Identification Number',
-    full_time_employees UInt32                        COMMENT 'Number of full-time employees',
-    exchange            LowCardinality(String)        COMMENT 'Exchange where the ticker is listed (NASDAQ, NYSE, B3)',
-    currency            LowCardinality(String)        COMMENT 'Currency in which the stock is traded (e.g., USD, BRL)',
-    extraction_date     Date                          COMMENT 'Date when the metadata was extracted from yfinance',
-    ingestion_timestamp DateTime                      COMMENT 'Timestamp of ingestion into the Bronze layer',
-    start_date          Date32                        COMMENT 'Date when the record becomes active',
-    end_date            Nullable(Date32)              COMMENT 'Date when the record becomes inactive',
-    is_active           UInt8                         COMMENT 'Flag indicating whether the record is currently active (1 = active, 0 = inactive)'
-)
-ENGINE = MergeTree()
-ORDER BY (ticker, start_date);
+INSERT INTO stock_market.dim_companies_dedup
+SELECT
+    ticker,
+    short_name,
+    sector,
+    industry,
+    country,
+    isin,
+    full_time_employees,
+    exchange,
+    currency,
+    extraction_date,
+    ingestion_timestamp,
+    start_date,
+    if(is_active = 1, CAST(NULL, 'Nullable(Date32)'), end_date) AS end_date,
+    is_active
+FROM (
+    SELECT
+        ticker,
+        short_name,
+        sector,
+        industry,
+        country,
+        isin,
+        full_time_employees,
+        exchange,
+        currency,
+        min(extraction_date) AS extraction_date,
+        max(ingestion_timestamp) AS ingestion_timestamp,
+        min(start_date) AS start_date,
+        max(end_date) AS end_date,
+        max(is_active) AS is_active
+    FROM stock_market.dim_companies
+    GROUP BY
+        ticker,
+        short_name,
+        sector,
+        industry,
+        country,
+        isin,
+        full_time_employees,
+        exchange,
+        currency
+);
 
--- 1.1 Active Companies View (Current Snapshot)
-CREATE VIEW IF NOT EXISTS stock_market.v_companies_active AS
+RENAME TABLE stock_market.dim_companies TO stock_market.dim_companies_old,
+             stock_market.dim_companies_dedup TO stock_market.dim_companies;
+
+DROP TABLE IF EXISTS stock_market.dim_companies_old;
+
+-- 2. Recreate the active companies view to refresh its schema
+DROP VIEW IF EXISTS stock_market.v_companies_active;
+CREATE VIEW stock_market.v_companies_active AS
 SELECT *
 FROM stock_market.dim_companies
 WHERE is_active = 1;
 
--- 2. Fact Table (Daily Prices)
-CREATE TABLE IF NOT EXISTS stock_market.fact_prices
-(
-    date                Date                           COMMENT 'Trading date',
-    ticker              LowCardinality(String)         COMMENT 'Stock ticker symbol (e.g. AAPL, GOOGL)',
-    open                Decimal(10, 2)                 COMMENT 'Opening price for the trading day',
-    high                Decimal(10, 2)                 COMMENT 'Highest price during the trading day',
-    low                 Decimal(10, 2)                 COMMENT 'Lowest price during the trading day',
-    close               Decimal(10, 2)                 COMMENT 'Closing price for the trading day',
-    adj_close           Decimal(10, 2)                 COMMENT 'Adjusted closing price for the trading day',
-    volume              UInt64                         COMMENT 'Total number of shares traded during the day',
-    dividends           Decimal(10, 2)                 COMMENT 'Total dividends paid during the day',
-    stock_splits        Decimal(10, 4)                 COMMENT 'Stock split ratio for the trading day',
-    ingestion_timestamp DateTime                       COMMENT 'Timestamp of ingestion into the Bronze layer'
-)
-ENGINE = MergeTree()
-PARTITION BY toYYYYMM(date)
-ORDER BY (ticker, date);
-
--- 3. Fact Table (Company investment metrics)
+-- 3. Create the new fact table for investment metrics
 CREATE TABLE IF NOT EXISTS stock_market.fact_company_metrics
 (
     extraction_date                Date                           COMMENT 'Date when the metrics were extracted from yfinance',
     ticker                         LowCardinality(String)         COMMENT 'Stock ticker symbol (e.g. AAPL, GOOGL)',
-    dividend_yield                 Decimal(10,4)                  COMMENT 'Annual dividend yield as a percentage',
+    dividend_yield                 Decimal(10,4)                  COMMENT 'Annual dividend yield as a percentage (fraction)',
     trailing_pe                    Decimal(10,2)                  COMMENT 'Trailing price-to-earnings ratio',
     peg_ratio                      Decimal(10,4)                  COMMENT 'PEG Ratio',
     price_to_book                  Decimal(10,4)                  COMMENT 'Price to Book Value (P/VP)',
@@ -90,8 +113,9 @@ ENGINE = MergeTree()
 PARTITION BY toYYYYMM(extraction_date)
 ORDER BY (ticker, extraction_date);
 
--- 4. Analytical View (Calculated Investment Ratios)
-CREATE VIEW IF NOT EXISTS stock_market.v_companies_performance AS
+-- 4. Create the performance view calculating financial ratios
+DROP VIEW IF EXISTS stock_market.v_companies_performance;
+CREATE VIEW stock_market.v_companies_performance AS
 WITH latest_metrics AS (
     -- Get only the most recent fundamentals snapshot for each company
     SELECT *

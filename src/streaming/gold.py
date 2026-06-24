@@ -1,5 +1,6 @@
 import argparse
 import sys
+from collections.abc import Callable
 from datetime import date
 from typing import TYPE_CHECKING, cast
 
@@ -7,7 +8,7 @@ from clickhouse_connect.driver.client import Client
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 
-from src.producer.config import SILVER_METADATA_DIR, SILVER_PRICES_DIR
+from src.producer.config import SILVER_METADATA_DIR, SILVER_METRICS_DIR, SILVER_PRICES_DIR
 from src.streaming.spark_session import create_spark_session
 from src.streaming.utils import get_clickhouse_client, read_delta_table
 from src.utils.logger import logger
@@ -17,7 +18,12 @@ if TYPE_CHECKING:
 
 
 def _load_prices_to_gold(spark: SparkSession, client: Client) -> None:
-    """Read silver prices Delta table, clean it, and load it into ClickHouse fact_prices."""
+    """Read silver prices Delta table, clean it, and load it into ClickHouse fact_prices.
+
+    Args:
+        spark: The active Spark session.
+        client: The ClickHouse Connect client.
+    """
     logger.info("Processing Silver Prices...")
     df_prices = read_delta_table(spark, SILVER_PRICES_DIR)
     df_prices = df_prices.select(
@@ -53,7 +59,12 @@ def _load_prices_to_gold(spark: SparkSession, client: Client) -> None:
 
 
 def _load_metadata_to_gold(spark: SparkSession, client: Client) -> None:
-    """Read silver metadata Delta table, clean it, and load it into ClickHouse dim_companies."""
+    """Read silver metadata Delta table, clean it, and load it into ClickHouse dim_companies.
+
+    Args:
+        spark: The active Spark session.
+        client: The ClickHouse Connect client.
+    """
     logger.info("Processing Silver Metadata...")
     df_metadata = read_delta_table(spark, SILVER_METADATA_DIR)
     df_metadata = df_metadata.select(
@@ -65,9 +76,7 @@ def _load_metadata_to_gold(spark: SparkSession, client: Client) -> None:
         col("isin"),
         col("full_time_employees"),
         col("exchange"),
-        col("market_cap"),
         col("currency"),
-        col("dividend_yield"),
         col("extraction_date"),
         col("ingestion_timestamp"),
         col("start_date"),
@@ -84,8 +93,101 @@ def _load_metadata_to_gold(spark: SparkSession, client: Client) -> None:
     logger.success("Silver Metadata loaded to Gold successfully.")
 
 
+def _load_metrics_to_gold(spark: SparkSession, client: Client) -> None:
+    """Read silver metrics Delta table and load it into ClickHouse fact_company_metrics.
+
+    Loads the historical snapshot metrics from the Silver layer Delta table,
+    identifies the affected partitions by extraction date, drops the existing
+    partitions in ClickHouse to prevent duplication on reruns, and inserts the
+    latest data.
+
+    Args:
+        spark: The active Spark session.
+        client: The ClickHouse Connect client.
+    """
+    logger.info("Processing Silver Metrics...")
+    df_metrics = read_delta_table(spark, SILVER_METRICS_DIR)
+    df_metrics = df_metrics.select(
+        col("extraction_date"),
+        col("ticker"),
+        col("dividend_yield"),
+        col("trailing_pe"),
+        col("peg_ratio"),
+        col("price_to_book"),
+        col("enterprise_to_ebitda"),
+        col("enterprise_to_ebit"),
+        col("book_value"),
+        col("trailing_eps"),
+        col("price_to_sales"),
+        col("operating_margins"),
+        col("asset_turnover"),
+        col("shares_outstanding"),
+        col("market_cap"),
+        col("ebitda"),
+        col("total_debt"),
+        col("total_cash"),
+        col("debt_to_equity"),
+        col("roa"),
+        col("roe"),
+        col("current_ratio"),
+        col("gross_margins"),
+        col("ebitda_margins"),
+        col("profit_margins"),
+        col("net_income_to_common"),
+        col("ingestion_timestamp"),
+    )
+    df_metrics_pd = cast("pd.DataFrame", df_metrics.toPandas())
+
+    if df_metrics_pd.empty:
+        logger.warning("Silver metrics DataFrame is empty. Nothing to load to Gold.")
+        return
+
+    # Extract unique partition IDs in 'YYYYMM' format based on extraction_date
+    dates = df_metrics_pd["extraction_date"].astype(str)
+    affected_partitions = dates.apply(lambda x: x.replace("-", "")[:6]).unique().tolist()
+
+    for partition in affected_partitions:
+        logger.info(f"Dropping partition '{partition}' in ClickHouse fact_company_metrics table...")
+        client.command(f"ALTER TABLE stock_market.fact_company_metrics DROP PARTITION '{partition}'")
+
+    logger.info("Inserting new/updated metrics into ClickHouse fact_company_metrics...")
+    client.insert_df("stock_market.fact_company_metrics", df_metrics_pd)
+    logger.success("Silver metrics loaded to gold successfully.")
+
+
+def _process_gold_table(
+    table_name: str,
+    target_table: str,
+    exists: bool,
+    load_fn: Callable[[], None],
+) -> None:
+    """Decide and load a specific silver table to ClickHouse gold layer.
+
+    Args:
+        table_name: Name of the table ("prices", "metadata", or "metrics").
+        target_table: The target table selected in CLI filter.
+        exists: Boolean indicating if the silver Delta table exists.
+        load_fn: Function to load the specific table.
+    """
+    display_name = table_name.capitalize()
+    if exists:
+        load_fn()
+    elif target_table not in (table_name, "all"):
+        logger.info(f"Silver {display_name} skipped (not requested by target table selection).")
+    else:
+        logger.warning(f"Silver {display_name} Delta table not found. Skipping {table_name} load.")
+
+
 def run_gold(exec_date: str, table: str = "all") -> None:
-    """Clean and load prices and metadata from Silver to Gold Layer (ClickHouse) using Spark."""
+    """Clean and load prices, metadata, and metrics from Silver to Gold Layer (ClickHouse).
+
+    Args:
+        exec_date: Execution date in YYYY-MM-DD format.
+        table: Target table to load ("prices", "metadata", "metrics", or "all").
+
+    Raises:
+        SystemExit: If the date format is invalid or processing fails.
+    """
     try:
         date.fromisoformat(exec_date)
     except ValueError:
@@ -100,8 +202,9 @@ def run_gold(exec_date: str, table: str = "all") -> None:
         # Check delta tables existence based on selected table filter
         prices_exist = table in ("prices", "all") and (SILVER_PRICES_DIR / "_delta_log").exists()
         metadata_exist = table in ("metadata", "all") and (SILVER_METADATA_DIR / "_delta_log").exists()
+        metrics_exist = table in ("metrics", "all") and (SILVER_METRICS_DIR / "_delta_log").exists()
 
-        if not prices_exist and not metadata_exist:
+        if not prices_exist and not metadata_exist and not metrics_exist:
             logger.warning(
                 f"No matching Silver Delta tables exist to process for table '{table}'. Skipping Gold layer processing."
             )
@@ -110,19 +213,9 @@ def run_gold(exec_date: str, table: str = "all") -> None:
         # Creating clickhouse connection
         client = get_clickhouse_client()
 
-        if prices_exist:
-            _load_prices_to_gold(spark, client)
-        elif table not in ("prices", "all"):
-            logger.info("Silver Prices skipped (not requested by target table selection).")
-        else:
-            logger.warning("Silver Prices Delta table not found. Skipping prices load.")
-
-        if metadata_exist:
-            _load_metadata_to_gold(spark, client)
-        elif table not in ("metadata", "all"):
-            logger.info("Silver Metadata skipped (not requested by target table selection).")
-        else:
-            logger.warning("Silver Metadata Delta table not found. Skipping metadata load.")
+        _process_gold_table("prices", table, prices_exist, lambda: _load_prices_to_gold(spark, client))
+        _process_gold_table("metadata", table, metadata_exist, lambda: _load_metadata_to_gold(spark, client))
+        _process_gold_table("metrics", table, metrics_exist, lambda: _load_metrics_to_gold(spark, client))
 
         logger.success("Gold layer processing completed successfully.")
 
@@ -135,7 +228,10 @@ def run_gold(exec_date: str, table: str = "all") -> None:
 
 
 def main() -> None:
-    """CLI entrypoint for Gold layer processing."""
+    """CLI entrypoint for Gold layer loading to ClickHouse.
+
+    Parses CLI arguments for target date and target table, and runs the Gold pipeline.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--date",
@@ -147,8 +243,8 @@ def main() -> None:
         "--table",
         type=str,
         default="all",
-        choices=["prices", "metadata", "all"],
-        help="Select which table to load (prices, metadata, or all)",
+        choices=["prices", "metadata", "metrics", "all"],
+        help="Select which table to load (prices, metadata, metrics, or all)",
     )
     args, _ = parser.parse_known_args()
 

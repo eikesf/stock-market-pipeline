@@ -30,7 +30,7 @@ The ingestion and Medallion steps are fully orchestrated using **Apache Airflow 
 
 ## Architecture & Pipelines
 
-Two parallel ELT pipelines populate a Star Schema in ClickHouse (`fact_prices` as the Fact Table and `dim_companies` as the Dimension Table).
+Three pipelines populate a Star Schema and analytical view in ClickHouse (`fact_prices` and `fact_company_metrics` as Fact Tables, `dim_companies` as the Dimension Table, and `v_companies_performance` as the analytical view).
 
 ```mermaid
 graph LR
@@ -64,15 +64,21 @@ graph LR
         T_SLV_P -->|"PySpark"| T_GLD_P
     end
 
-    %% ── Monthly Pipeline ─────────────────────────────────────────
+    %% ── Monthly Metadata & Metrics Pipeline ──────────────────────
     subgraph DAG_Metadata ["DAG: dag_stock_metadata"]
         T_EXT_M["task_extract_metadata<br/>(Landing · JSON)"]
         T_BRZ_M["task_ingest_bronze_metadata<br/>(Bronze · Delta)"]
+        
+        T_SLV_MET["task_deduplicate_silver_metrics<br/>(Silver · Delta)"]
         T_SLV_M["task_deduplicate_silver_metadata<br/>(Silver · Delta)"]
+        
+        T_GLD_MET["task_load_gold_metrics<br/>(Gold · Direct)"]
         T_GLD_M["task_load_gold_metadata<br/>(Gold · Staging)"]
 
         T_EXT_M -->|"PySpark"| T_BRZ_M
+        T_BRZ_M -->|"PySpark"| T_SLV_MET
         T_BRZ_M -->|"PySpark"| T_SLV_M
+        T_SLV_MET -->|"PySpark"| T_GLD_MET
         T_SLV_M -->|"PySpark"| T_GLD_M
     end
 
@@ -84,8 +90,14 @@ graph LR
     %% ── OLAP Storage ─────────────────────────────────────────────
     subgraph ClickHouse ["Gold Layer  ·  ClickHouse (OLAP)"]
         G_FACT["table: fact_prices"]
+        G_MET["table: fact_company_metrics"]
         G_DIM["table: dim_companies"]
+        G_PERF["view: v_companies_performance"]
+        
         G_FACT -.->|"Star Schema"| G_DIM
+        G_MET -.->|"Star Schema"| G_DIM
+        G_DIM --> G_PERF
+        G_MET --> G_PERF
     end
 
     %% ── Control & Data Flows ─────────────────────────────────────
@@ -101,12 +113,14 @@ graph LR
     %% Loading (bold)
     T_GLD_P ==>|"Load"| G_FACT
     T_GLD_M ==>|"Load"| G_DIM
+    T_GLD_MET ==>|"Load"| G_MET
 
     %% Maintenance (dashed)
     T_MNT -.->|"Compaction & Vacuum"| T_BRZ_P
     T_MNT -.->|"Compaction & Vacuum"| T_BRZ_M
     T_MNT -.->|"Compaction & Vacuum"| T_SLV_P
     T_MNT -.->|"Compaction & Vacuum"| T_SLV_M
+    T_MNT -.->|"Compaction & Vacuum"| T_SLV_MET
 
     %% ── Class Definitions ────────────────────────────────────────
     classDef orchestrator fill:#e62464,stroke:#c2185b,stroke-width:2px,color:#fff
@@ -129,18 +143,20 @@ graph LR
     class Tickers tickerList
     class T_EXT_P,T_EXT_M landing
     class T_BRZ_P,T_BRZ_M bronze
-    class T_SLV_P,T_SLV_M silver
-    class T_GLD_P,T_GLD_M,T_MNT gold
+    class T_SLV_P,T_SLV_M,T_SLV_MET silver
+    class T_GLD_P,T_GLD_M,T_GLD_MET,T_MNT gold
     class Sources sourceBox
     class DAG_Prices,DAG_Metadata,DAG_Maintenance dagBox
     class ClickHouse olapBox
-    class G_FACT,G_DIM olapTable
+    class G_FACT,G_DIM,G_MET,G_PERF olapTable
 ```
-
 
 **Pipeline A - Daily Stock Prices (Fact):** extracts daily OHLCV time-series from `yfinance`, stores raw Parquet files in the Landing zone, ingests into Delta Lake (Bronze), deduplicates via PySpark window functions (Silver), and loads into ClickHouse as `fact_prices`.
 
-**Pipeline B - Monthly Metadata (Dimension):** extracts company information (sector, industry, country, isin, full_time_employees, exchange, currency, market cap, dividend yield) from `yfinance`, follows the same Bronze/Silver medallion flow, and loads into ClickHouse as `dim_companies`.
+**Pipeline B - Monthly Metadata & Investment Metrics (Dimension, Fact, and View):** extracts company details and financial fundamentals (such as debt, cash, EBITDA, valuation metrics) from `yfinance`. It stores JSON extractions in Landing, loads them into Delta Bronze, and then splits into two parallel Silver & Gold paths:
+- **Metadata track**: Deduplicates and tracks changes via Slowly Changing Dimension (SCD) Type 2 in `dim_companies`.
+- **Metrics track**: Captures monthly snapshots of investment, valuation, and debt metrics in `fact_company_metrics`.
+- **Analytical View**: Computes dynamic indicators (Valuation, Debt, Efficiency, Profitability ratios) in `v_companies_performance`.
 
 ---
 
@@ -185,12 +201,13 @@ stock_market_pipeline/
 ├── data/                    # Shared data volume (created at runtime)
 │   ├── bronze/              # Delta Bronze layer (prices/ & metadata/)
 │   ├── landing/             # Raw extractions (prices/ & metadata/)
-│   └── silver/              # Delta Silver layer (prices/ & metadata/)
+│   └── silver/              # Delta Silver layer (prices/, metadata/, metrics/)
 ├── docker/
 │   ├── Dockerfile           # Python 3.13 + Java 21 image
 │   └── docker-compose.yml   # Full multi-service stack (Airflow, ClickHouse, Python)
 ├── src/
-│   ├── db_init/init.sql     # ClickHouse DDL (auto-run on first boot)
+│   ├── db_init/             # ClickHouse DDL & migrations
+│   │   ├── init.sql         # ClickHouse DDL (auto-run on first boot)
 │   ├── producer/            # Landing layer (extraction)
 │   │   ├── config.py        # Configs and path mappings
 │   │   ├── generator.py     # Pipeline A: prices extractor
@@ -202,7 +219,7 @@ stock_market_pipeline/
 │   │   ├── bronze.py        # Bronze: prices ingestion
 │   │   ├── silver.py        # Silver: prices deduplication
 │   │   ├── bronze_metadata.py # Bronze: metadata ingestion
-│   │   ├── silver_metadata.py # Silver: metadata deduplication
+│   │   ├── silver_metadata.py # Silver: metadata & metrics deduplication
 │   │   ├── gold.py          # Gold: ClickHouse writer
 │   │   └── maintenance.py   # Delta Lake table maintenance (compaction + vacuum)
 │   └── utils/
@@ -314,10 +331,19 @@ The Airflow Web UI is accessible at [http://localhost:8080](http://localhost:808
     *   **Flow:** Extracts prices to Landing → Ingests to Bronze → Deduplicates to Silver → Loads `fact_prices` in ClickHouse.
 2.  **`dag_stock_metadata`** (Monthly Pipeline):
     *   **Schedule:** Runs monthly (`@monthly`).
-    *   **Flow:** Extracts company profiles to Landing → Ingests to Bronze → Deduplicates to Silver → Loads `dim_companies` in ClickHouse.
+    *   **Flow:** Extracts company profiles to Landing → Ingests to Bronze → Splits into parallel paths:
+        *   **Metadata**: Deduplicates Silver Metadata → Loads `dim_companies` in ClickHouse (SCD Type 2).
+        *   **Metrics**: Deduplicates Silver Metrics → Loads `fact_company_metrics` in ClickHouse.
 3.  **`dag_delta_maintenance`** (Weekly Maintenance Pipeline):
     *   **Schedule:** Runs weekly on Sundays (`@weekly`).
-    *   **Flow:** Runs compaction (`OPTIMIZE`) and cleanup (`VACUUM`) on the Bronze and Silver Delta tables to resolve the small file problem and manage storage.
+    *   **Flow:** Runs compaction (`OPTIMIZE`) and cleanup (`VACUUM`) on the Bronze and Silver Delta tables (including prices, metadata, and metrics) to resolve the small file problem and manage storage.
+
+### Spark Write Serialization & Pools
+
+Because Apache Spark and Delta Lake operations are resource-heavy and local file writes can conflict when executed in parallel (e.g., deduplicating silver metadata and metrics concurrently), the DAGs use an Airflow pool named `spark_write_pool`.
+
+*   **Configuration:** This pool is automatically created with **1 slot** on the first DAG run.
+*   **Purpose:** Enforces sequential execution for tasks that write to Delta tables or ClickHouse, preventing transaction conflicts (`ConcurrentAppendException`, file locking, etc.) while allowing the rest of the DAGs (like data extraction) to run in parallel.
 
 ---
 
@@ -412,11 +438,11 @@ defined in `pyproject.toml` under `[tool.pytest.ini_options]`.
 
 Connect with DataGrip, DBeaver, or any ClickHouse-compatible client to `localhost:8123` using the credentials from your `.env` file.
 
-### Dimension Table: `stock_market.dim_companies`
+### Dimension Table: `stock_market.dim_companies` (SCD Type 2)
 
 | Column | Type | Sorting Key | Description |
 |---|---|---|---|
-| `ticker` | LowCardinality(String) | Yes | Stock ticker symbol |
+| `ticker` | LowCardinality(String) | Yes | Stock ticker symbol (e.g., AAPL, GOOGL) |
 | `short_name` | String | | Company display name |
 | `sector` | LowCardinality(String) | | GICS sector classification |
 | `industry` | LowCardinality(String) | | Industry classification |
@@ -424,11 +450,12 @@ Connect with DataGrip, DBeaver, or any ClickHouse-compatible client to `localhos
 | `isin` | String | | International Securities Identification Number |
 | `full_time_employees` | UInt32 | | Number of full-time employees |
 | `exchange` | LowCardinality(String) | | Exchange (NASDAQ, NYSE, B3) |
-| `market_cap` | UInt64 | | Market capitalization in USD |
 | `currency` | LowCardinality(String) | | Currency in which the stock is traded |
-| `dividend_yield` | Decimal(10,2) | | Annual dividend yield (%) |
 | `extraction_date` | Date | | Date of yfinance extraction |
 | `ingestion_timestamp` | DateTime | | Ingestion timestamp |
+| `start_date` | Date32 | Yes | Date when the record becomes active |
+| `end_date` | Nullable(Date32) | | Date when the record becomes inactive |
+| `is_active` | UInt8 | | Flag indicating whether the record is currently active (1 = active, 0 = inactive) |
  
 ### Fact Table: `stock_market.fact_prices`
 
@@ -451,6 +478,51 @@ which also serves as the implicit sparse index used to skip data blocks during q
 
 > `fact_prices` is partitioned by `toYYYYMM(date)`, enabling partition
 pruning on date range filters and efficient monthly data management.
+
+### Fact Table: `stock_market.fact_company_metrics`
+
+| Column | Type | Sorting Key | Description |
+|---|---|---|---|
+| `extraction_date` | Date | Yes | Date of yfinance extraction |
+| `ticker` | LowCardinality(String) | Yes | Stock ticker symbol (e.g. AAPL, GOOGL) |
+| `dividend_yield` | Decimal(10,4) | | Annual dividend yield as a percentage |
+| `trailing_pe` | Decimal(10,2) | | Trailing price-to-earnings ratio (P/E) |
+| `peg_ratio` | Decimal(10,4) | | PEG Ratio |
+| `price_to_book` | Decimal(10,4) | | Price to Book Value (P/VP) |
+| `enterprise_to_ebitda` | Decimal(10,4) | | EV/EBITDA |
+| `enterprise_to_ebit` | Decimal(10,4) | | EV/EBIT |
+| `book_value` | Decimal(10,4) | | Book Value Per Share (VPA) |
+| `trailing_eps` | Decimal(10,4) | | Earnings Per Share (LPA) |
+| `price_to_sales` | Decimal(10,4) | | Price to Sales Ratio (P/SR) |
+| `operating_margins` | Decimal(10,4) | | Operating margin (EBIT margin) |
+| `asset_turnover` | Decimal(10,4) | | Asset turnover ratio |
+| `shares_outstanding` | UInt64 | | Total number of shares outstanding |
+| `market_cap` | UInt64 | | Market capitalization in original currency |
+| `ebitda` | Int64 | | Earnings before interest, taxes, depreciation, and amortization |
+| `total_debt` | UInt64 | | Total debt |
+| `total_cash` | UInt64 | | Total cash |
+| `debt_to_equity` | Decimal(10,4) | | Debt-to-equity ratio |
+| `roa` | Decimal(10,4) | | Return on assets |
+| `roe` | Decimal(10,4) | | Return on equity |
+| `current_ratio` | Decimal(10,4) | | Current ratio |
+| `gross_margins` | Decimal(10,4) | | Gross margins |
+| `ebitda_margins` | Decimal(10,4) | | EBITDA margins |
+| `profit_margins` | Decimal(10,4) | | Profit margins |
+| `net_income_to_common` | Int64 | | Net income to common shareholders |
+| `ingestion_timestamp` | DateTime | | Ingestion timestamp |
+
+### Analytical View: `stock_market.v_companies_performance`
+
+This view combines standard company metadata with the most recent valuation, efficiency, debt, and profitability metrics. It calculates advanced ratios on-the-fly, serving as a unified target for downstream BI/analytics dashboards.
+
+Key calculated columns:
+- `p_ebitda`: Price / EBITDA
+- `p_ebit`: Price / EBIT
+- `net_debt_equity`: Net Debt / Equity (incorporating book value and shares outstanding)
+- `net_debt_ebitda`: Net Debt / EBITDA
+- `net_debt_ebit`: Net Debt / EBIT
+- `equity_assets`: Equity / Assets
+- `liabilities_assets`: Liabilities / Assets
 
 ### Example queries
 
@@ -482,6 +554,20 @@ FROM stock_market.fact_prices p
 JOIN stock_market.dim_companies c ON p.ticker = c.ticker
 WHERE p.date >= today() - INTERVAL 90 DAY
 ORDER BY p.ticker, p.date;
+```
+
+Filter high-performing companies with low debt from the analytical performance view:
+```sql
+SELECT
+    ticker,
+    short_name,
+    sector,
+    net_debt_ebitda,
+    roe,
+    dividend_yield
+FROM stock_market.v_companies_performance
+WHERE net_debt_ebitda < 2.0 AND roe > 0.15
+ORDER BY roe DESC;
 ```
 
 ---

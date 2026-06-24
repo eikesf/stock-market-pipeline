@@ -12,7 +12,19 @@ from src.utils.logger import logger
 
 
 def run_silver(exec_date: str) -> None:
-    """Clean and deduplicate stock prices from Bronze to Silver Layer using Spark."""
+    """Clean and deduplicate stock prices from Bronze to Silver Layer using Spark.
+
+    Reads from the Bronze prices Delta table, drops records with missing critical
+    fields, casts prices/volumes to their target database types (Decimals and Longs),
+    deduplicates per (ticker, date) keeping the latest entry, and writes the
+    cleaned dataset to the Silver prices Delta table.
+
+    Args:
+        exec_date: Execution date in YYYY-MM-DD format.
+
+    Raises:
+        SystemExit: If the date format is invalid or processing fails.
+    """
     try:
         date.fromisoformat(exec_date)
     except ValueError:
@@ -66,7 +78,10 @@ def run_silver(exec_date: str) -> None:
 
 
 def main() -> None:
-    """CLI entrypoint for Silver price processing."""
+    """CLI entrypoint for Silver price processing.
+
+    Parses CLI arguments for the target execution date, and runs the Silver prices pipeline.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--date",

@@ -12,7 +12,22 @@ from src.utils.logger import logger
 
 
 def run_metadata_generator(exec_date: str | None = None, tickers: list[str] | None = None) -> None:
-    """Extract company metadata from yFinance and persist to the Landing zone."""
+    """Extract company metadata from yFinance and persist to the Landing zone.
+
+    Downloads and parses detailed stock metadata (such as profile, sector,
+    industry, and financial metrics) using yfinance, and saves it as a compressed
+    Parquet file.
+
+    Args:
+        exec_date: Optional execution date in YYYY-MM-DD format. Defaults to
+            today's date.
+        tickers: Optional list of tickers to download metadata for. If not
+            provided, downloads metadata for all configured tickers.
+
+    Raises:
+        SystemExit: If no metadata records are retrieved or if saving the
+            parquet file fails.
+    """
     if exec_date is None:
         exec_date = date.today().isoformat()
     # Grab tickers from the dictionary if not provided
@@ -45,6 +60,28 @@ def run_metadata_generator(exec_date: str | None = None, tickers: list[str] | No
                 "market_cap": info.get("marketCap", 0),
                 "currency": info.get("currency", "N/A"),
                 "dividend_yield": info.get("dividendYield", 0.0),
+                "trailing_pe": info.get("trailingPE", 0.0),
+                "peg_ratio": info.get("pegRatio", 0.0),
+                "price_to_book": info.get("priceToBook", 0.0),
+                "enterprise_to_ebitda": info.get("enterpriseToEbitda", 0.0),
+                "enterprise_to_ebit": info.get("enterpriseToEbit", 0.0),
+                "book_value": info.get("bookValue", 0.0),
+                "trailing_eps": info.get("trailingEps", 0.0),
+                "price_to_sales": info.get("priceToSalesTrailing12Months", 0.0),
+                "operating_margins": info.get("operatingMargins", 0.0),
+                "asset_turnover": info.get("assetTurnover", 0.0),
+                "shares_outstanding": info.get("sharesOutstanding", 0),
+                "ebitda": info.get("ebitda", 0),
+                "total_debt": info.get("totalDebt", 0),
+                "total_cash": info.get("totalCash", 0),
+                "debt_to_equity": info.get("debtToEquity", 0.0),
+                "roa": info.get("returnOnAssets", 0.0),
+                "roe": info.get("returnOnEquity", 0.0),
+                "current_ratio": info.get("currentRatio", 0.0),
+                "gross_margins": info.get("grossMargins", 0.0),
+                "ebitda_margins": info.get("ebitdaMargins", 0.0),
+                "profit_margins": info.get("profitMargins", 0.0),
+                "net_income_to_common": info.get("netIncomeToCommon", 0),
                 "extraction_date": exec_date,
             }
 
@@ -72,7 +109,11 @@ def run_metadata_generator(exec_date: str | None = None, tickers: list[str] | No
 
 
 def main() -> None:
-    """Main entry point to execute the metadata generator CLI."""
+    """Main entry point to execute the metadata generator CLI.
+
+    Parses CLI arguments for the target date, validates the date format,
+    and runs the metadata generator.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--date", type=str, default=date.today().isoformat(), help="Date to download metadata (format: YYYY-MM-DD)"
