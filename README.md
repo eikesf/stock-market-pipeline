@@ -64,22 +64,28 @@ graph LR
         T_SLV_P -->|"PySpark"| T_GLD_P
     end
 
-    %% ── Monthly Metadata & Metrics Pipeline ──────────────────────
+    %% ── Monthly Metadata Pipeline ─────────────────────────────────
     subgraph DAG_Metadata ["DAG: dag_stock_metadata"]
-        T_EXT_M["task_extract_metadata<br/>(Landing · JSON)"]
-        T_BRZ_M["task_ingest_bronze_metadata<br/>(Bronze · Delta)"]
-        
-        T_SLV_MET["task_deduplicate_silver_metrics<br/>(Silver · Delta)"]
+        T_EXT_M1["task_extract_metadata<br/>(Landing · JSON)"]
+        T_BRZ_M1["task_ingest_bronze_metadata<br/>(Bronze · Delta)"]
         T_SLV_M["task_deduplicate_silver_metadata<br/>(Silver · Delta)"]
-        
-        T_GLD_MET["task_load_gold_metrics<br/>(Gold · Direct)"]
         T_GLD_M["task_load_gold_metadata<br/>(Gold · Staging)"]
 
-        T_EXT_M -->|"PySpark"| T_BRZ_M
-        T_BRZ_M -->|"PySpark"| T_SLV_MET
-        T_BRZ_M -->|"PySpark"| T_SLV_M
-        T_SLV_MET -->|"PySpark"| T_GLD_MET
+        T_EXT_M1 -->|"PySpark"| T_BRZ_M1
+        T_BRZ_M1 -->|"PySpark"| T_SLV_M
         T_SLV_M -->|"PySpark"| T_GLD_M
+    end
+
+    %% ── Weekly Metrics Pipeline ───────────────────────────────────
+    subgraph DAG_Metrics ["DAG: dag_stock_metrics"]
+        T_EXT_M2["task_extract_metadata<br/>(Landing · JSON)"]
+        T_BRZ_M2["task_ingest_bronze_metadata<br/>(Bronze · Delta)"]
+        T_SLV_MET["task_deduplicate_silver_metrics<br/>(Silver · Delta)"]
+        T_GLD_MET["task_load_gold_metrics<br/>(Gold · Direct)"]
+
+        T_EXT_M2 -->|"PySpark"| T_BRZ_M2
+        T_BRZ_M2 -->|"PySpark"| T_SLV_MET
+        T_SLV_MET -->|"PySpark"| T_GLD_MET
     end
 
     %% ── Weekly Maintenance Pipeline ──────────────────────────────
@@ -103,12 +109,14 @@ graph LR
     %% ── Control & Data Flows ─────────────────────────────────────
     %% Orchestration (dashed) — schedule on the arrows
     Airflow -.->|"Mon–Fri · 22:00 UTC"| T_EXT_P
-    Airflow -.->|"@monthly"| T_EXT_M
+    Airflow -.->|"@monthly"| T_EXT_M1
+    Airflow -.->|"@weekly"| T_EXT_M2
     Airflow -.->|"@weekly"| T_MNT
 
     %% Extraction (bold)
     YF_API ==>|"OHLCV Data"| T_EXT_P
-    YF_API ==>|"Metadata"| T_EXT_M
+    YF_API ==>|"Metadata"| T_EXT_M1
+    YF_API ==>|"Metadata"| T_EXT_M2
 
     %% Loading (bold)
     T_GLD_P ==>|"Load"| G_FACT
@@ -117,7 +125,8 @@ graph LR
 
     %% Maintenance (dashed)
     T_MNT -.->|"Compaction & Vacuum"| T_BRZ_P
-    T_MNT -.->|"Compaction & Vacuum"| T_BRZ_M
+    T_MNT -.->|"Compaction & Vacuum"| T_BRZ_M1
+    T_MNT -.->|"Compaction & Vacuum"| T_BRZ_M2
     T_MNT -.->|"Compaction & Vacuum"| T_SLV_P
     T_MNT -.->|"Compaction & Vacuum"| T_SLV_M
     T_MNT -.->|"Compaction & Vacuum"| T_SLV_MET
@@ -141,21 +150,21 @@ graph LR
     class YF_API api
     class Wiki,BRAPI source
     class Tickers tickerList
-    class T_EXT_P,T_EXT_M landing
-    class T_BRZ_P,T_BRZ_M bronze
+    class T_EXT_P,T_EXT_M1,T_EXT_M2 landing
+    class T_BRZ_P,T_BRZ_M1,T_BRZ_M2 bronze
     class T_SLV_P,T_SLV_M,T_SLV_MET silver
     class T_GLD_P,T_GLD_M,T_GLD_MET,T_MNT gold
     class Sources sourceBox
-    class DAG_Prices,DAG_Metadata,DAG_Maintenance dagBox
+    class DAG_Prices,DAG_Metadata,DAG_Metrics,DAG_Maintenance dagBox
     class ClickHouse olapBox
     class G_FACT,G_DIM,G_MET,G_PERF olapTable
 ```
 
 **Pipeline A - Daily Stock Prices (Fact):** extracts daily OHLCV time-series from `yfinance`, stores raw Parquet files in the Landing zone, ingests into Delta Lake (Bronze), deduplicates via PySpark window functions (Silver), and loads into ClickHouse as `fact_prices`.
 
-**Pipeline B - Monthly Metadata & Investment Metrics (Dimension, Fact, and View):** extracts company details and financial fundamentals (such as debt, cash, EBITDA, valuation metrics) from `yfinance`. It stores JSON extractions in Landing, loads them into Delta Bronze, and then splits into two parallel Silver & Gold paths:
-- **Metadata track**: Deduplicates and tracks changes via Slowly Changing Dimension (SCD) Type 2 in `dim_companies`.
-- **Metrics track**: Captures monthly snapshots of investment, valuation, and debt metrics in `fact_company_metrics`.
+**Pipeline B - Weekly & Monthly Company Data Pipelines (Dimension, Fact, and View):** extracts company details and financial fundamentals (such as debt, cash, EBITDA, valuation metrics) from `yfinance`. It stores Parquet extractions in Landing, loads them into Delta Bronze, and then splits into two parallel Silver & Gold paths managed by separate DAGs:
+- **Metadata track (Monthly DAG)**: Deduplicates and tracks changes via Slowly Changing Dimension (SCD) Type 2 in `dim_companies`.
+- **Metrics track (Weekly DAG)**: Captures weekly snapshots of investment, valuation, and debt metrics in `fact_company_metrics`.
 - **Analytical View**: Computes dynamic indicators (Valuation, Debt, Efficiency, Profitability ratios) in `v_companies_performance`.
 
 ---
@@ -331,10 +340,11 @@ The Airflow Web UI is accessible at [http://localhost:8080](http://localhost:808
     *   **Flow:** Extracts prices to Landing → Ingests to Bronze → Deduplicates to Silver → Loads `fact_prices` in ClickHouse.
 2.  **`dag_stock_metadata`** (Monthly Pipeline):
     *   **Schedule:** Runs monthly (`@monthly`).
-    *   **Flow:** Extracts company profiles to Landing → Ingests to Bronze → Splits into parallel paths:
-        *   **Metadata**: Deduplicates Silver Metadata → Loads `dim_companies` in ClickHouse (SCD Type 2).
-        *   **Metrics**: Deduplicates Silver Metrics → Loads `fact_company_metrics` in ClickHouse.
-3.  **`dag_delta_maintenance`** (Weekly Maintenance Pipeline):
+    *   **Flow:** Extracts company profiles to Landing → Ingests to Bronze → Deduplicates Silver Metadata → Loads `dim_companies` in ClickHouse (SCD Type 2).
+3.  **`dag_stock_metrics`** (Weekly Pipeline):
+    *   **Schedule:** Runs weekly (`@weekly`).
+    *   **Flow:** Extracts company profiles to Landing → Ingests to Bronze → Deduplicates Silver Metrics → Loads `fact_company_metrics` in ClickHouse.
+4.  **`dag_delta_maintenance`** (Weekly Maintenance Pipeline):
     *   **Schedule:** Runs weekly on Sundays (`@weekly`).
     *   **Flow:** Runs compaction (`OPTIMIZE`) and cleanup (`VACUUM`) on the Bronze and Silver Delta tables (including prices, metadata, and metrics) to resolve the small file problem and manage storage.
 

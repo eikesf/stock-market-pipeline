@@ -102,17 +102,18 @@ def ingest_bronze_metadata(**context: Any) -> None:
     run_bronze_metadata(exec_date=exec_date)
 
 
-@task(task_id="task_deduplicate_silver_metadata", pool="spark_write_pool")
-def deduplicate_silver_metadata(**context: Any) -> None:
-    """Deduplicate stock metadata in Silver Layer using Spark."""
-    from src.streaming.silver_metadata import run_silver_metadata
+@task(task_id="task_deduplicate_silver_metrics", pool="spark_write_pool")
+def deduplicate_silver_metrics(**context: Any) -> None:
+    """Clean and deduplicate daily financial metrics in Silver Layer using Spark."""
+    from src.streaming.silver_metadata import run_silver_metrics
 
     exec_date = context["ds"]
-    run_silver_metadata(exec_date=exec_date)
+    run_silver_metrics(exec_date=exec_date)
 
-@task(task_id="task_load_gold_metadata", pool="spark_write_pool")
-def load_gold_metadata(**context: Any) -> None:
-    """Load deduplicated stock metadata from Silver Layer to Gold Layer using Spark."""
+
+@task(task_id="task_load_gold_metrics", pool="spark_write_pool")
+def load_gold_metrics(**context: Any) -> None:
+    """Load stock metrics from Silver Layer to Gold Layer (ClickHouse) using Spark."""
     from airflow.sdk import BaseHook
 
     from src.streaming.gold import run_gold
@@ -130,21 +131,21 @@ def load_gold_metadata(**context: Any) -> None:
         logging.getLogger("airflow.dag").warning("Failed to get clickhouse connection from Airflow: %s", e)
 
     exec_date = context["ds"]
-    run_gold(exec_date=exec_date, table="metadata")
+    run_gold(exec_date=exec_date, table="metrics")
 
 
 with DAG(
-    dag_id="dag_stock_metadata",
+    dag_id="dag_stock_metrics",
     default_args=default_args,
-    description="Stock Metadata Pipeline",
-    schedule=CronTriggerTimetable("@monthly", timezone="UTC"),
+    description="Stock Metrics Pipeline",
+    schedule=CronTriggerTimetable("@weekly", timezone="UTC"),
     start_date=datetime(2026, 6, 9),
     catchup=False,
-    tags=["stock_market", "stock_metadata"],
+    tags=["stock_market", "stock_metrics"],
 ) as dag:
     extract_metadata_task = extract_metadata()
     ingest_bronze_metadata_task = ingest_bronze_metadata()
-    deduplicate_silver_metadata_task = deduplicate_silver_metadata()
-    load_gold_metadata_task = load_gold_metadata()
+    deduplicate_silver_metrics_task = deduplicate_silver_metrics()
+    load_gold_metrics_task = load_gold_metrics()
 
-    extract_metadata_task >> ingest_bronze_metadata_task >> deduplicate_silver_metadata_task >> load_gold_metadata_task
+    extract_metadata_task >> ingest_bronze_metadata_task >> deduplicate_silver_metrics_task >> load_gold_metrics_task
