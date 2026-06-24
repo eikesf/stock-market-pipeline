@@ -315,6 +315,7 @@ def test_gold_clickhouse_interaction_failure(spark_session, tmp_path):
         with (
             patch("src.streaming.gold.SILVER_PRICES_DIR", silver_prices_dir),
             patch("src.streaming.gold.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.gold.SILVER_METRICS_DIR", tmp_path / "test_silver_metrics"),
             patch("src.streaming.gold.get_clickhouse_client", return_value=mock_client),
             patch("src.streaming.gold.create_spark_session", return_value=spark_session),
             patch.object(spark_session, "stop"),
@@ -405,6 +406,7 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
         with (
             patch("src.streaming.gold.SILVER_PRICES_DIR", silver_prices_dir),
             patch("src.streaming.gold.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.gold.SILVER_METRICS_DIR", tmp_path / "test_silver_metrics"),
             patch("src.streaming.gold.get_clickhouse_client", return_value=mock_client),
             patch("src.streaming.gold.create_spark_session", return_value=spark_session),
             patch.object(spark_session, "stop"),
@@ -477,6 +479,7 @@ def test_gold_date_from_arguments(spark_session, tmp_path):
     with (
         patch("src.streaming.gold.SILVER_PRICES_DIR", silver_prices_dir),
         patch("src.streaming.gold.SILVER_METADATA_DIR", silver_metadata_dir),
+        patch("src.streaming.gold.SILVER_METRICS_DIR", tmp_path / "test_silver_metrics"),
         patch("src.streaming.gold.get_clickhouse_client", return_value=mock_client),
         patch("src.streaming.gold.create_spark_session", return_value=spark_session),
         patch("sys.argv", ["gold.py", "--date", "2026-05-28"]),
@@ -504,6 +507,7 @@ def test_gold_invalid_date_format(spark_session, tmp_path):
         with (
             patch("src.streaming.gold.SILVER_PRICES_DIR", silver_prices_dir),
             patch("src.streaming.gold.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.gold.SILVER_METRICS_DIR", tmp_path / "test_silver_metrics"),
             patch("src.streaming.gold.get_clickhouse_client", return_value=mock_client),
             patch("src.streaming.gold.create_spark_session", return_value=spark_session),
             patch("sys.argv", ["gold.py", "--date", "invalid_date_format"]),
@@ -551,6 +555,7 @@ def test_gold_missing_metadata_delta_table(spark_session, tmp_path):
         with (
             patch("src.streaming.gold.SILVER_PRICES_DIR", silver_prices_dir),
             patch("src.streaming.gold.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.gold.SILVER_METRICS_DIR", tmp_path / "test_silver_metrics"),
             patch("src.streaming.gold.get_clickhouse_client", return_value=mock_client),
             patch("src.streaming.gold.create_spark_session", return_value=spark_session),
             patch.object(spark_session, "stop"),
@@ -609,6 +614,7 @@ def test_gold_missing_prices_delta_table(spark_session, tmp_path):
         with (
             patch("src.streaming.gold.SILVER_PRICES_DIR", silver_prices_dir),
             patch("src.streaming.gold.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.gold.SILVER_METRICS_DIR", tmp_path / "test_silver_metrics"),
             patch("src.streaming.gold.get_clickhouse_client", return_value=mock_client),
             patch("src.streaming.gold.create_spark_session", return_value=spark_session),
             patch.object(spark_session, "stop"),
@@ -644,6 +650,7 @@ def test_gold_missing_both_delta_tables(spark_session, tmp_path):
         with (
             patch("src.streaming.gold.SILVER_PRICES_DIR", silver_prices_dir),
             patch("src.streaming.gold.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.gold.SILVER_METRICS_DIR", silver_prices_dir),
             patch("src.streaming.gold.get_clickhouse_client", return_value=mock_client),
             patch("src.streaming.gold.create_spark_session", return_value=spark_session),
             patch.object(spark_session, "stop"),
@@ -726,6 +733,7 @@ def test_gold_selective_loading(spark_session, tmp_path):
             with (
                 patch("src.streaming.gold.SILVER_PRICES_DIR", silver_prices_dir),
                 patch("src.streaming.gold.SILVER_METADATA_DIR", silver_metadata_dir),
+                patch("src.streaming.gold.SILVER_METRICS_DIR", tmp_path / f"silver_metrics_{table_param}"),
                 patch("src.streaming.gold.get_clickhouse_client", return_value=mock_client),
                 patch("src.streaming.gold.create_spark_session", return_value=spark_session),
                 patch.object(spark_session, "stop"),

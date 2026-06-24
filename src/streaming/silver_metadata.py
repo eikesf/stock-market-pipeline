@@ -123,9 +123,9 @@ def run_silver_metadata(exec_date: str) -> None:
 
 
 def run_silver_metrics(exec_date: str) -> None:
-    """Clean, cast, and deduplicate daily financial metrics from Bronze to Silver.
+    """Clean, cast, and deduplicate monthly financial metrics from Bronze to Silver.
 
-    Reads raw stock metadata (which contains daily financial indicators) from the
+    Reads raw stock metadata (which contains financial indicators) from the
     Bronze layer, casts all metrics to their appropriate data types (Decimal for ratios,
     Long for large currency values/counts), filters for the specified execution date,
     keeps only the most recent extraction per ticker for that date, and saves the

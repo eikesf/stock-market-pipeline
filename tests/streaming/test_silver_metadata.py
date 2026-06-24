@@ -744,7 +744,6 @@ def test_silver_metrics_cleaning_and_casting(spark_session, tmp_path):
     df_bronze_spark = spark_session.createDataFrame(df_bronze)
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
 
-    # Also need a dummy silver_metadata_dir so that run_silver_metadata doesn't fail
     silver_metadata_dir = tmp_path / "silver_metadata"
     silver_metadata_dir.mkdir(parents=True, exist_ok=True)
 
