@@ -26,7 +26,6 @@ def create_spark_session() -> SparkSession:
             SparkSession.builder.appName("Stock Market Pipeline")
             .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
             .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-            .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.RawLocalFileSystem")
         )
 
         # Checking stderr stream for pytest/notebooks compatibility.

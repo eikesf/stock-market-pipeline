@@ -21,62 +21,6 @@ default_args = {
 }
 
 
-def _create_spark_pool() -> None:
-    """Programmatically checks and creates the 'spark_write_pool' in the Airflow metadata database.
-
-    This pool is configured with a single slot to serialize Spark write operations,
-    preventing concurrent write conflicts and file corruption on local file systems.
-    """
-    try:
-        from airflow.models.pool import Pool
-        from airflow.utils.session import create_session
-
-        with create_session() as session:
-            pool = session.query(Pool).filter(Pool.pool == "spark_write_pool").first()
-            if not pool:
-                new_pool = Pool(
-                    pool="spark_write_pool",
-                    slots=1,
-                    description="Serializes Spark writes to prevent Delta Lake filesystem conflicts",
-                )
-                session.add(new_pool)
-                session.commit()
-    except Exception as e:
-        import logging
-
-        logging.getLogger("airflow.dag").warning("Failed to programmatically create spark_write_pool: %s", e)
-
-
-def _create_clickhouse_connection() -> None:
-    """Programmatically checks and creates the 'clickhouse_default' connection in the Airflow metadata database."""
-    try:
-        from airflow.models.connection import Connection
-        from airflow.utils.session import create_session
-
-        with create_session() as session:
-            conn = session.query(Connection).filter(Connection.conn_id == "clickhouse_default").first()
-            if not conn:
-                new_conn = Connection(
-                    conn_id="clickhouse_default",
-                    conn_type="generic",
-                    host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
-                    login=os.getenv("CLICKHOUSE_USER", "finance_admin"),
-                    password=os.getenv("CLICKHOUSE_PASSWORD", "FinanceStock2026*"),
-                    port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
-                    schema=os.getenv("CLICKHOUSE_DB", "stock_market"),
-                )
-                session.add(new_conn)
-                session.commit()
-    except Exception as e:
-        import logging
-
-        logging.getLogger("airflow.dag").warning("Failed to programmatically create clickhouse connection: %s", e)
-
-
-_create_spark_pool()
-_create_clickhouse_connection()
-
-
 @task(task_id="task_extract_metadata")
 def extract_metadata(**context: Any) -> None:
     """Extracts stock metadata from Yahoo Finance for a list of tickers and saves them to Landing Zone."""
