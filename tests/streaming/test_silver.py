@@ -22,17 +22,17 @@ def test_silver_prices_cleaning_and_casting(spark_session, tmp_path):
 
     df_bronze = pd.DataFrame(
         {
-            "date": ["2026-05-28"],
-            "ticker": ["   msft   "],
-            "open": [170.5],
-            "high": [172.5],
-            "low": [168.5],
-            "close": [171.55],
-            "adj_close": [171.55],
-            "volume": [10000],
-            "dividends": [0.5],
-            "stock_splits": [0.12345],
-            "ingestion_timestamp": ["2026-05-28 10:00:00"],
+            "date": ["2026-05-28", "2026-05-28"],
+            "ticker": ["   msft   ", "  usdbrl=x  "],
+            "open": [170.5, 5.20],
+            "high": [172.5, 5.22],
+            "low": [168.5, 5.18],
+            "close": [171.55, 5.21],
+            "adj_close": [171.55, 5.21],
+            "volume": [10000, 0],
+            "dividends": [0.5, 0.0],
+            "stock_splits": [0.12345, 0.0],
+            "ingestion_timestamp": ["2026-05-28 10:00:00", "2026-05-28 10:00:00"],
         }
     )
 
@@ -48,20 +48,29 @@ def test_silver_prices_cleaning_and_casting(spark_session, tmp_path):
         main()
 
     df_silver = spark_session.read.format("delta").load(str(silver_dir))
-    row = df_silver.collect()[0]
+    assert df_silver.count() == 2
 
-    assert row.ticker == "MSFT"
-    assert row.date == date(2026, 5, 28)
-    assert row.open == Decimal("170.50")
-    assert row.high == Decimal("172.50")
-    assert row.low == Decimal("168.50")
-    assert row.close == Decimal("171.55")
-    assert row.adj_close == Decimal("171.55")
-    assert row.volume == 10000
-    assert row.dividends == Decimal("0.50")
-    assert row.stock_splits == Decimal("0.1235")
-    assert row.ingestion_timestamp == datetime(2026, 5, 28, 10, 0, 0)
-    assert df_silver.count() == 1
+    rows = df_silver.orderBy("ticker").collect()
+    row_msft = rows[0]
+    row_usdbrl = rows[1]
+
+    assert row_msft.ticker == "MSFT"
+    assert row_msft.date == date(2026, 5, 28)
+    assert row_msft.open == Decimal("170.50")
+    assert row_msft.high == Decimal("172.50")
+    assert row_msft.low == Decimal("168.50")
+    assert row_msft.close == Decimal("171.55")
+    assert row_msft.adj_close == Decimal("171.55")
+    assert row_msft.volume == 10000
+    assert row_msft.dividends == Decimal("0.50")
+    assert row_msft.stock_splits == Decimal("0.1235")
+    assert row_msft.ingestion_timestamp == datetime(2026, 5, 28, 10, 0, 0)
+
+    assert row_usdbrl.ticker == "USDBRL"
+    assert row_usdbrl.date == date(2026, 5, 28)
+    assert row_usdbrl.open == Decimal("5.20")
+    assert row_usdbrl.close == Decimal("5.21")
+    assert row_usdbrl.volume == 0
 
     assert isinstance(df_silver.schema["date"].dataType, DateType)
     assert isinstance(df_silver.schema["ticker"].dataType, StringType)

@@ -30,7 +30,7 @@ The ingestion and Medallion steps are fully orchestrated using **Apache Airflow 
 
 ## Architecture & Pipelines
 
-Three pipelines populate a Star Schema and analytical view in ClickHouse (`fact_prices` and `fact_company_metrics` as Fact Tables, `dim_companies` as the Dimension Table, and `v_companies_performance` as the analytical view).
+Three pipelines populate a Star Schema and analytical views in ClickHouse (`fact_prices` and `fact_company_metrics` as Fact Tables, `dim_companies` as the Dimension Table, and `v_companies_performance` and `v_fact_prices_converted` as the analytical views).
 
 ```mermaid
 graph LR
@@ -101,11 +101,14 @@ graph LR
         G_MET["table: fact_company_metrics"]
         G_DIM["table: dim_companies"]
         G_PERF["view: v_companies_performance"]
+        G_CONV["view: v_fact_prices_converted"]
         
         G_FACT -.->|"Star Schema"| G_DIM
         G_MET -.->|"Star Schema"| G_DIM
         G_DIM --> G_PERF
         G_MET --> G_PERF
+        G_FACT --> G_CONV
+        G_DIM --> G_CONV
     end
 
     %% ── Control & Data Flows ─────────────────────────────────────
@@ -159,7 +162,7 @@ graph LR
     class Sources sourceBox
     class DAG_Prices,DAG_Metadata,DAG_Metrics,DAG_Maintenance dagBox
     class ClickHouse olapBox
-    class G_FACT,G_DIM,G_MET,G_PERF olapTable
+    class G_FACT,G_DIM,G_MET,G_PERF,G_CONV olapTable
 ```
 
 **Pipeline A - Daily Stock Prices (Fact):** extracts daily OHLCV time-series from `yfinance`, stores raw Parquet files in the Landing zone, ingests into Delta Lake (Bronze), deduplicates via PySpark window functions (Silver), and loads into ClickHouse as `fact_prices`.
@@ -488,8 +491,29 @@ Connect with DataGrip, DBeaver, or any ClickHouse-compatible client to `localhos
 > In ClickHouse, `MergeTree` does not have primary keys or foreign keys in the relational sense. The `ORDER BY` clause defines the **sorting key**,
 which also serves as the implicit sparse index used to skip data blocks during queries. Deduplication is handled upstream in the Silver layer before data reaches ClickHouse.
 
-> `fact_prices` is partitioned by `toYYYYMM(date)`, enabling partition
-pruning on date range filters and efficient monthly data management.
+> `fact_prices` is partitioned by `toYYYYMM(date)`, enabling partition pruning on date range filters and efficient monthly data management.
+
+### Analytical View: `stock_market.v_fact_prices_converted`
+
+This view normalizes and converts daily asset prices into both BRL and USD currencies. It joins the daily asset prices with the `USDBRL` exchange rate using an `ASOF LEFT JOIN` (which performs an automatic forward fill of exchange rates for weekends or local holidays). If no exchange rate exists prior to the trading date (e.g., dates before `2026-04-02`), it returns `NULL` for both the exchange rate and converted prices to prevent incorrect associations.
+
+| Column | Type | Description |
+|---|---|---|
+| `ticker` | LowCardinality(String) | Stock ticker symbol |
+| `currency` | LowCardinality(String) | Original currency of the ticker (BRL or USD) |
+| `date` | Date | Trading date |
+| `volume` | UInt64 | Total shares traded |
+| `usd_brl` | Nullable(Decimal(10,2)) | Applied USD to BRL exchange rate for the date |
+| `open_brl` | Nullable(Decimal(18,4)) | Opening price in BRL |
+| `high_brl` | Nullable(Decimal(18,4)) | Daily high price in BRL |
+| `low_brl` | Nullable(Decimal(18,4)) | Daily low price in BRL |
+| `close_brl` | Nullable(Decimal(18,4)) | Closing price in BRL |
+| `adj_close_brl` | Nullable(Decimal(18,4)) | Adjusted closing price in BRL |
+| `open_usd` | Nullable(Decimal(18,4)) | Opening price in USD |
+| `high_usd` | Nullable(Decimal(18,4)) | Daily high price in USD |
+| `low_usd` | Nullable(Decimal(18,4)) | Daily low price in USD |
+| `close_usd` | Nullable(Decimal(18,4)) | Closing price in USD |
+| `adj_close_usd` | Nullable(Decimal(18,4)) | Adjusted closing price in USD |
 
 ### Fact Table: `stock_market.fact_company_metrics`
 
@@ -580,6 +604,20 @@ SELECT
 FROM stock_market.v_companies_performance
 WHERE net_debt_ebitda < 2.0 AND roe > 0.15
 ORDER BY roe DESC;
+```
+
+Query assets with converted multi-currency prices (e.g., converting BRL assets to USD and vice versa):
+```sql
+SELECT
+    ticker,
+    date,
+    currency,
+    usd_brl,
+    close_brl,
+    close_usd
+FROM stock_market.v_fact_prices_converted
+WHERE ticker IN ('AAPL', 'ABEV3.SA') AND date >= today() - INTERVAL 7 DAY
+ORDER BY ticker, date;
 ```
 
 ---

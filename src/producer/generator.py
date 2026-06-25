@@ -84,6 +84,9 @@ def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
         logger.critical("No tickers found to download. Aborting pipeline.")
         sys.exit(1)
 
+    if "USDBRL=X" not in tickers:
+        tickers.append("USDBRL=X")
+
     try:
         logger.info(f"Downloading data for {len(tickers)} tickers...")
         data = yf.download(tickers=tickers, start=exec_date, end=end_date.isoformat(), actions=True, auto_adjust=False)

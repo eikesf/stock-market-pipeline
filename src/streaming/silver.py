@@ -2,7 +2,7 @@ import argparse
 import sys
 from datetime import date
 
-from pyspark.sql.functions import col, row_number, trim, upper
+from pyspark.sql.functions import col, row_number, trim, upper, when
 from pyspark.sql.window import Window
 
 from src.producer.config import BRONZE_PRICES_DIR, SILVER_PRICES_DIR
@@ -54,6 +54,10 @@ def run_silver(exec_date: str) -> None:
             .withColumn("dividends", col("dividends").cast("decimal(10,2)"))
             .withColumn("stock_splits", col("stock_splits").cast("decimal(10,4)"))
             .withColumn("ingestion_timestamp", col("ingestion_timestamp").cast("timestamp"))
+        )
+
+        stock_df_silver = stock_df_silver.withColumn(
+            "ticker", when(col("ticker") == "USDBRL=X", "USDBRL").otherwise(col("ticker"))
         )
 
         # Define a window to partition data by ticker and date, ordering by the most recent ingestion timestamp
