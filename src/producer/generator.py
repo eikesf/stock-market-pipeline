@@ -89,7 +89,14 @@ def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
 
     try:
         logger.info(f"Downloading data for {len(tickers)} tickers...")
-        data = yf.download(tickers=tickers, start=exec_date, end=end_date.isoformat(), actions=True, auto_adjust=False)
+        data = yf.download(
+            tickers=tickers,
+            start=exec_date,
+            end=end_date.isoformat(),
+            actions=True,
+            auto_adjust=False,
+            progress=False,
+        )
     except Exception:
         logger.opt(exception=True).critical("Failed to download from Yahoo Finance. Aborting pipeline.")
         sys.exit(1)

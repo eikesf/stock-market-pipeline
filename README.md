@@ -183,7 +183,8 @@ graph LR
 | **Java Environment** | OpenJDK | `21` | JVM runtime required by Apache Spark 4.x. |
 | **Bronze / Silver** | PySpark + Delta Lake | `Spark 4.1.1` · `Delta 4.2.0` | ACID transactions, time travel, schema enforcement, and window-based deduplication. |
 | **Gold / OLAP** | ClickHouse | `25.8 LTS (Alpine)` | Columnar OLAP database providing sub-second aggregations on large datasets. |
-| **Database Driver** | clickhouse-connect | `1.0.0` | Official lightweight Python connector; no JDBC dependency required. |
+| **Database Driver** | clickhouse-connect | `>=1.3.0` | Official lightweight Python connector; no JDBC dependency required. |
+| **Airflow Provider** | apache-airflow-providers-clickhousedb | `>=1.0.0` | Official ClickHouse provider hook for seamless integration with Airflow connections. |
 | **Orchestration** | Apache Airflow | `3.2.2` | Decoupled architecture (`api-server`, `scheduler`, `dag-processor`) orchestrating Medallion tasks. |
 | **Metastore** | PostgreSQL | `18-alpine` | Metadata database for Apache Airflow. |
 | **Package Manager** | uv | `0.11.19` | Fast, deterministic Python dependency resolution with lockfile support. |
@@ -256,11 +257,19 @@ stock_market_pipeline/
 
 ### 1 — Configure environment variables
 
-Duplicate the environment variables file and configure your credentials in the new `.env` file:
+Duplicate the environment variables template file and configure your credentials in the new `.env` file:
 
 ```bash
 cp .env.example .env
 ```
+
+Ensure you configure the following key environment variables:
+- **ClickHouse Credentials**: `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` to secure the database.
+- **Airflow Admin**: `AIRFLOW_ADMIN_USER`, `AIRFLOW_ADMIN_PASSWORD`, and `AIRFLOW_ADMIN_EMAIL` for accessing the Web UI.
+- **Alerts Configuration**:
+  - `ALERT_EMAIL`: Recipient email address for receiving formatted HTML task failure notifications.
+  - `AIRFLOW_CONN_SMTP_DEFAULT`: SMTP Connection URI (e.g. `smtp://user%40gmail.com:app_password@smtp.gmail.com:587?disable_ssl=true&from_email=user%40gmail.com`) used by Airflow's email system. Note that special characters in the email address (like `@`) must be URL-encoded (e.g., `%40`).
+  - `DISCORD_WEBHOOK_URL`: Discord webhook URL to receive detailed real-time rich-embed task failure notifications in your Discord server.
 
 
 ### 2 — Build and start the containers
@@ -353,12 +362,25 @@ The Airflow Web UI is accessible at [http://localhost:8080](http://localhost:808
     *   **Schedule:** Runs weekly on Sundays (`@weekly`).
     *   **Flow:** Runs compaction (`OPTIMIZE`) and cleanup (`VACUUM`) on the Bronze and Silver Delta tables (including prices, metadata, and metrics) to resolve the small file problem and manage storage.
 
+### Task Failure Notifications
+
+All DAGs are configured with custom failure callbacks to immediately report failures:
+*   **Rich HTML Email Alerts**: Real-time emails containing structured details (DAG ID, Task ID, operator class, execution date, attempt number, task duration, log links, and the full exception stack trace).
+*   **Discord Webhook Embeds**: Formatted rich embeds sent to Discord containing key execution metadata, a link to the Airflow logs, and the exception.
+
 ### Spark Write Serialization & Pools
 
 Because Apache Spark and Delta Lake operations are resource-heavy and local file writes can conflict when executed in parallel (e.g., deduplicating silver metadata and metrics concurrently), the DAGs use an Airflow pool named `spark_write_pool`.
 
 *   **Configuration:** This pool is automatically created with **1 slot** on the first DAG run.
 *   **Purpose:** Enforces sequential execution for tasks that write to Delta tables or ClickHouse, preventing transaction conflicts (`ConcurrentAppendException`, file locking, etc.) while allowing the rest of the DAGs (like data extraction) to run in parallel.
+
+### ClickHouse Connection Integration
+
+Airflow tasks communicate with ClickHouse using the official hook provided by `apache-airflow-providers-clickhousedb`:
+*   **Connection ID**: `clickhouse_default`
+*   **Connection Type**: `clickhouse` (instead of `generic`)
+*   **Usage**: The parameters are resolved dynamically via `ClickHouseHook.get_connection("clickhouse_default")` and set as environment variables before invoking the Spark pipeline runner, keeping credentials secure and centralized in Airflow.
 
 ---
 
@@ -381,6 +403,9 @@ make run_metadata # Run only the Metadata pipeline (Monthly)
 make run_landing_prices     # Extract daily prices from yfinance
 make run_landing_metadata   # Extract company metadata from yfinance
 ```
+
+> [!NOTE]
+> Extractions from Yahoo Finance are configured with `progress=False` to silence interactive progress bars, keeping Airflow task execution and container logging clean.
 
 #### Bronze
 

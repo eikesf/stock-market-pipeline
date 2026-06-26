@@ -6,13 +6,14 @@ from airflow.timetables.trigger import CronTriggerTimetable
 
 from src.utils.alerts import send_airflow_failure_discord, send_airflow_failure_email
 
-email_recipient = os.getenv("AIRFLOW__SMTP__SMTP_USER")
+email_recipient = os.getenv("ALERT_EMAIL")
 
 default_args = {
     "owner": "eikesf",
     "depends_on_past": False,
     "email": [email_recipient] if email_recipient else [],
     "email_on_failure": False,
+    "email_on_retry": False,
     "on_failure_callback": [send_airflow_failure_email, send_airflow_failure_discord],
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
