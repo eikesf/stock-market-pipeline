@@ -7,13 +7,14 @@ from airflow.timetables.trigger import CronTriggerTimetable
 
 from src.utils.alerts import send_airflow_failure_discord, send_airflow_failure_email
 
-email_recipient = os.getenv("AIRFLOW__SMTP__SMTP_USER")
+email_recipient = os.getenv("ALERT_EMAIL")
 
 default_args = {
     "owner": "eikesf",
     "depends_on_past": False,
     "email": [email_recipient] if email_recipient else [],
     "email_on_failure": False,
+    "email_on_retry": False,
     "on_failure_callback": [send_airflow_failure_email, send_airflow_failure_discord],
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
@@ -58,12 +59,12 @@ def deduplicate_silver_metrics(**context: Any) -> None:
 @task(task_id="task_load_gold_metrics", pool="spark_write_pool")
 def load_gold_metrics(**context: Any) -> None:
     """Load stock metrics from Silver Layer to Gold Layer (ClickHouse) using Spark."""
-    from airflow.sdk import BaseHook
+    from airflow.providers.clickhousedb.hooks.clickhouse import ClickHouseHook
 
     from src.streaming.gold import run_gold
 
     try:
-        conn = BaseHook.get_connection("clickhouse_default")
+        conn = ClickHouseHook.get_connection("clickhouse_default")
         os.environ["CLICKHOUSE_HOST"] = conn.host or "clickhouse"
         os.environ["CLICKHOUSE_PORT"] = str(conn.port or 8123)
         os.environ["CLICKHOUSE_USER"] = conn.login or "default"

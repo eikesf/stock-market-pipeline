@@ -43,7 +43,7 @@ services:
         condition: service_healthy
     networks:
       - stream-network
-    command: bash -c "airflow db migrate && airflow users create --username $${AIRFLOW_ADMIN_USER} --firstname $${AIRFLOW_ADMIN_FIRSTNAME} --lastname $${AIRFLOW_ADMIN_LASTNAME} --role Admin --email $${AIRFLOW_ADMIN_EMAIL} --password $${AIRFLOW_ADMIN_PASSWORD} && (airflow connections list | grep -q 'clickhouse_default' || airflow connections add clickhouse_default --conn-type generic --conn-host $${CLICKHOUSE_HOST:-clickhouse} --conn-login $${CLICKHOUSE_USER:-finance_admin} --conn-password '$${CLICKHOUSE_PASSWORD:-FinanceStock2026*}' --conn-port $${CLICKHOUSE_PORT:-8123} --conn-schema $${CLICKHOUSE_DB:-stock_market}) && (airflow pools list | grep -q 'spark_write_pool' || airflow pools set spark_write_pool 1 'Serializes Spark writes to prevent Delta Lake filesystem conflicts')"
+    command: bash -c "airflow db migrate && airflow users create --username $${AIRFLOW_ADMIN_USER} --firstname $${AIRFLOW_ADMIN_FIRSTNAME} --lastname $${AIRFLOW_ADMIN_LASTNAME} --role Admin --email $${AIRFLOW_ADMIN_EMAIL} --password $${AIRFLOW_ADMIN_PASSWORD} && (airflow connections list | grep -q 'clickhouse_default' || airflow connections add clickhouse_default --conn-type clickhouse --conn-host $${CLICKHOUSE_HOST:-clickhouse} --conn-login $${CLICKHOUSE_USER:-finance_admin} --conn-password \"$${CLICKHOUSE_PASSWORD:-FinanceStock2026*}\" --conn-port $${CLICKHOUSE_PORT:-8123} --conn-schema $${CLICKHOUSE_DB:-stock_market}) && (airflow pools list | grep -q 'spark_write_pool' || airflow pools set spark_write_pool 1 'Serializes Spark writes to prevent Delta Lake filesystem conflicts')"
 
   airflow_apiserver:
     image: stock-pipeline:latest
