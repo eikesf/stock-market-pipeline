@@ -53,6 +53,19 @@ def run_silver_metadata(exec_date: str) -> None:
             .withColumn("currency", trim(col("currency").cast("string")))
             .withColumn("extraction_date", col("extraction_date").cast("date"))
             .withColumn("ingestion_timestamp", col("ingestion_timestamp").cast("timestamp"))
+            .select(
+                "ticker",
+                "short_name",
+                "sector",
+                "industry",
+                "country",
+                "isin",
+                "full_time_employees",
+                "exchange",
+                "currency",
+                "extraction_date",
+                "ingestion_timestamp",
+            )
         )
 
         # Adjusting the exchange names to correspond to the pattern
@@ -74,6 +87,22 @@ def run_silver_metadata(exec_date: str) -> None:
             .withColumn("start_date", col("extraction_date"))
             .withColumn("end_date", lit(None).cast("date"))
             .withColumn("is_active", lit(1).cast("integer"))
+            .select(
+                "ticker",
+                "short_name",
+                "sector",
+                "industry",
+                "country",
+                "isin",
+                "full_time_employees",
+                "exchange",
+                "currency",
+                "extraction_date",
+                "ingestion_timestamp",
+                "start_date",
+                "end_date",
+                "is_active",
+            )
         )
 
         is_cold_start = not (SILVER_METADATA_DIR / "_delta_log").exists()
@@ -180,6 +209,34 @@ def run_silver_metrics(exec_date: str) -> None:
             .withColumn("net_income_to_common", col("net_income_to_common").cast("long"))
             .withColumn("extraction_date", col("extraction_date").cast("date"))
             .withColumn("ingestion_timestamp", col("ingestion_timestamp").cast("timestamp"))
+        ).select(
+            "ticker",
+            "market_cap",
+            "dividend_yield",
+            "trailing_pe",
+            "peg_ratio",
+            "price_to_book",
+            "enterprise_to_ebitda",
+            "enterprise_to_ebit",
+            "book_value",
+            "trailing_eps",
+            "price_to_sales",
+            "operating_margins",
+            "asset_turnover",
+            "shares_outstanding",
+            "ebitda",
+            "total_debt",
+            "total_cash",
+            "debt_to_equity",
+            "roa",
+            "roe",
+            "current_ratio",
+            "gross_margins",
+            "ebitda_margins",
+            "profit_margins",
+            "net_income_to_common",
+            "extraction_date",
+            "ingestion_timestamp",
         )
 
         metrics_df_silver = metrics_df_silver.filter(col("extraction_date") == lit(exec_date).cast("date"))

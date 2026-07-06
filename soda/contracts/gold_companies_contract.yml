@@ -1,0 +1,247 @@
+checks for dim_companies:
+  # =========================================================================
+  # 1. Schema Validation (Structure and Column Types)
+  # =========================================================================
+
+  # Ensure all required columns are present in the dim_companies table
+  - schema:
+      name: "Check for required columns in dim_companies"
+      fail:
+        when required column missing:
+          - ticker
+          - short_name
+          - sector
+          - industry
+          - country
+          - isin
+          - exchange
+          - full_time_employees
+          - currency
+          - extraction_date
+          - ingestion_timestamp
+          - start_date
+          - end_date
+          - is_active
+
+
+  # Validate that column types match the ClickHouse destination mapping
+  # (Note: ClickHouse types are exposed as MySQL-compatible types through port 9004)
+  - schema:
+      name: "Check for correct column types in dim_companies"
+      fail:
+        when wrong column type:
+          ticker: LowCardinality(String)
+          short_name: String
+          sector: LowCardinality(String)
+          industry: LowCardinality(String)
+          country: LowCardinality(String)
+          isin: String
+          full_time_employees: Nullable(UInt32)
+          exchange: LowCardinality(String)
+          currency: LowCardinality(String)
+          extraction_date: Date
+          ingestion_timestamp: DateTime
+          start_date: Date32
+          end_date: Nullable(Date32)
+          is_active: UInt8
+
+  # =========================================================================
+  # 2. Dataset Completeness & Uniqueness (Key constraints)
+  # =========================================================================
+
+  # Ensure the companies dimension is populated and monitor unexpected volume drops
+  - row_count > 0:
+      name: "Monitor table row count and ensure it is populated"
+
+  # Key identifiers must never be null
+  - missing_count(ticker) = 0
+  - missing_count(short_name) = 0
+  - missing_count(sector) = 0
+  - missing_count(industry) = 0
+  - missing_count(exchange) = 0
+  - missing_count(currency) = 0
+  - missing_count(extraction_date) = 0
+  - missing_count(ingestion_timestamp) = 0
+  - missing_count(start_date) = 0
+  - missing_count(is_active) = 0
+
+  # Ensure that the composite key (ticker, start_date) is unique
+  - duplicate_count(ticker, start_date) = 0:
+      name: "Check that the composite key (ticker, start_date) is unique"
+
+  # =========================================================================
+  # 3. Text Formatting & Cleanliness Constraints
+  # =========================================================================
+
+  # Ticker formatting check (uppercase alphanumeric, dots, and hyphens)
+  - failed rows:
+      name: "Check that the ticker format is valid"
+      fail query: |
+        SELECT *
+        FROM dim_companies
+        WHERE NOT match(ticker, '^[A-Z0-9\\.\\-]+$')
+
+  # ISIN code formatting check (standard 12-character alphanumeric code starting with country prefix or 'N/A')
+  - failed rows:
+      name: "Check that the ISIN format is valid"
+      fail query: |
+        SELECT *
+        FROM dim_companies
+        WHERE NOT match(isin, '^(N/A|[A-Z]{2}[A-Z0-9]{9}[0-9])$')
+
+  # Exchange must belong to the accepted market list (e.g. B3, BTS, NASDAQ, NYSE)
+  - invalid_count(exchange) = 0:
+      valid values: ["B3", "BTS", "NASDAQ", "NYSE"]
+
+  # Currency must belong to the accepted list (e.g. BRL, USD)
+  - invalid_count(currency) = 0:
+      valid values: ["BRL", "USD"]
+
+  # Ensure sector does not contain blank or placeholder values for standard companies (excluding ETFs/Rights)
+  - failed rows:
+      name: "Ensure sector does not contain blank or placeholder values"
+      fail query: |
+        SELECT ticker, sector
+        FROM dim_companies
+        WHERE is_active = 1
+          AND ticker NOT LIKE '%11.SA'
+          AND ticker NOT LIKE '%4L.SA'
+          AND ticker NOT LIKE '%3L.SA'
+          AND sector IN ('', ' ', 'null', 'NULL', 'N/A', 'Unknown', 'unknown')
+      warn: when > 0
+
+  # Ensure industry does not contain blank or placeholder values for standard companies (excluding ETFs/Rights)
+  - failed rows:
+      name: "Ensure industry does not contain blank or placeholder values"
+      fail query: |
+        SELECT ticker, industry
+        FROM dim_companies
+        WHERE is_active = 1
+          AND ticker NOT LIKE '%11.SA'
+          AND ticker NOT LIKE '%4L.SA'
+          AND ticker NOT LIKE '%3L.SA'
+          AND industry IN ('', ' ', 'null', 'NULL', 'N/A', 'Unknown', 'unknown')
+      warn: when > 0
+
+  # Ensure the is_active column has boolean values (1 or 0)
+  - invalid_count(is_active) = 0:
+      valid values: [0, 1]
+  
+  # =========================================================================
+  # 4. Logical Consistency & Temporal Rules
+  # =========================================================================
+
+  # Start date and extraction date cannot be in the future
+  - failed rows:
+      name: "Check that start_date and extraction_date are not in the future"
+      fail query: |
+          SELECT *
+          FROM dim_companies
+          WHERE start_date > today() OR extraction_date > today()
+
+  # Ingestion timestamp cannot be in the future and must be after extraction date
+  - failed rows:
+      name: "Check that ingestion_timestamp is not in the future and is after extraction_date"
+      fail query: |
+          SELECT *
+          FROM dim_companies
+          WHERE ingestion_timestamp > now() OR ingestion_timestamp < extraction_date
+
+  # =========================================================================
+  # 5. SCD Type 2 Dimensions Integrity Rules
+  # =========================================================================
+
+  # Active records (is_active = 1) must have end_date set as NULL
+  - failed rows:
+      name: "Check active records (is_active = 1) must have end_date set as NULL"
+      fail query: |
+        SELECT *
+        FROM dim_companies
+        WHERE is_active = 1 AND end_date IS NOT NULL
+
+  # Inactive records (is_active = 0) must have a valid end_date populated
+  - failed rows:
+      name: "Check inactive records (is_active = 0) must have end_date set"
+      fail query: |
+        SELECT *
+        FROM dim_companies
+        WHERE is_active = 0 AND end_date IS NULL
+
+  # Expiration dates (end_date) must be after or equal to start_date
+  - failed rows:
+      name: "Check expiration dates (end_date) must be after or equal the start_date"
+      fail query: |
+        SELECT *
+        FROM dim_companies
+        WHERE end_date IS NOT NULL AND end_date < start_date
+
+  # Ensure there is at most one active record (is_active = 1) per ticker at any time
+  - failed rows:
+      name: "Check that there is at most one active record (is_active = 1) per ticker at any time"
+      fail query: |
+        SELECT ticker
+        FROM dim_companies
+        WHERE is_active = 1
+        GROUP BY ticker
+        HAVING count(*) > 1
+
+  # Ensure active periods do not overlap for the same ticker (using custom SQL query against dim_companies)
+  - failed rows:
+      name: "Check that active periods do not overlap for the same ticker"
+      fail query: |
+        SELECT a.ticker, a.start_date, b.start_date
+        FROM dim_companies a
+        JOIN dim_companies b ON a.ticker = b.ticker
+        AND a.start_date < b.start_date
+        AND (a.end_date IS NULL OR a.end_date > b.start_date)
+
+  # Ensure there are no gaps in historical periods for SCD Type 2
+  - failed rows:
+      name: "Check that there are no gaps in historical periods for SCD Type 2"
+      fail query: |
+        SELECT a.ticker, a.end_date, b.start_date
+        FROM dim_companies a
+        JOIN dim_companies b ON a.ticker = b.ticker
+        AND b.start_date > a.start_date
+        AND a.end_date IS NOT NULL
+        AND a.end_date != b.start_date
+        WHERE b.start_date = (
+            SELECT min(c.start_date)
+            FROM dim_companies c
+            WHERE c.ticker = a.ticker AND c.start_date > a.start_date
+        )
+
+  # Referential Integrity: Check that all active companies have corresponding price records (excluding ETFs/Rights)
+  - failed rows:
+      name: "Ensure active companies have corresponding price records in fact_prices"
+      fail query: |
+        SELECT ticker 
+        FROM dim_companies
+        WHERE is_active = 1
+          AND ticker NOT LIKE '%11.SA'
+          AND ticker NOT LIKE '%4L.SA'
+          AND ticker NOT LIKE '%3L.SA'
+          AND ticker NOT IN (SELECT DISTINCT ticker FROM fact_prices)
+      warn: when > 0
+
+# =========================================================================
+# 6. Active Companies View (v_companies_active) Validations
+# =========================================================================
+checks for v_companies_active:
+  # Ensure the business key (ticker) is strictly unique in the active view
+  - duplicate_count(ticker) = 0:
+      name: "Check that ticker is unique in active view"
+
+  # Ensure the view only exposes currently active records
+  - invalid_count(is_active) = 0:
+      name: "Check that active view contains only active records"
+      valid values: [1]
+
+  # Ensure end_date is always null for active records
+  - failed rows:
+      name: "Check that end_date is always NULL in active view"
+      fail query: |
+        SELECT ticker
+        FROM v_companies_active
+        WHERE end_date IS NOT NULL
+

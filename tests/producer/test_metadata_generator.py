@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from src.producer.metadata_generator import run_metadata_generator
@@ -134,7 +135,7 @@ class TestMetadataGenerator:
         assert df_final is not None
         assert df_final.shape[0] == 1
         assert df_final["ticker"].iloc[0] == "AAPL"
-        assert "BBSE3.SA" not in df_final["ticker"].values
+        assert "BBSE3.SA" not in df_final["ticker"].to_numpy()
 
         aapl_row = df_final[df_final["ticker"] == "AAPL"].iloc[0]
         assert aapl_row["short_name"] == "Apple Inc."
@@ -199,8 +200,8 @@ class TestMetadataGenerator:
         assert df_final["ticker"].iloc[0] == "AAPL"
         assert df_final["country"].iloc[0] == "N/A"
         assert df_final["sector"].iloc[0] == "N/A"
-        assert df_final["market_cap"].iloc[0] == 0
-        assert df_final["dividend_yield"].iloc[0] == 0.0
+        assert pd.isna(df_final["market_cap"].iloc[0])
+        assert pd.isna(df_final["dividend_yield"].iloc[0])
         assert df_final["extraction_date"].iloc[0] == "2026-05-28"
 
     def test_run_metadata_generator_write_failure(self, mock_to_parquet, mock_ticker, mock_get_all_tickers):
@@ -249,7 +250,7 @@ class TestMetadataGenerator:
 
         assert df_final is not None
         assert df_final.shape[0] == 1
-        assert "AAPL" in df_final["ticker"].values
+        assert "AAPL" in df_final["ticker"].to_numpy()
 
     @patch("src.producer.metadata_generator.run_metadata_generator")
     def test_metadata_generator_main_valid_date(

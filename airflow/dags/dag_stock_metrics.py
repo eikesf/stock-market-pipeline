@@ -56,6 +56,14 @@ def deduplicate_silver_metrics(**context: Any) -> None:
     run_silver_metrics(exec_date=exec_date)
 
 
+@task(task_id="task_validate_silver_metrics", pool="spark_write_pool")
+def validate_silver_metrics() -> None:
+    """Validate Silver metrics Delta table using Soda Core."""
+    from src.quality.soda_validator import run_silver_scan
+
+    run_silver_scan(table_name="silver_metrics", contract_path="soda/contracts/silver_metrics_contract.yml")
+
+
 @task(task_id="task_load_gold_metrics", pool="spark_write_pool")
 def load_gold_metrics(**context: Any) -> None:
     """Load stock metrics from Silver Layer to Gold Layer (ClickHouse) using Spark."""
@@ -79,6 +87,15 @@ def load_gold_metrics(**context: Any) -> None:
     run_gold(exec_date=exec_date, table="metrics")
 
 
+@task(task_id="task_validate_gold_metrics")
+def validate_gold_metrics() -> None:
+    """Validate Gold metrics and performance view in ClickHouse using Soda Core."""
+    from src.quality.soda_validator import run_gold_scan
+
+    run_gold_scan(contract_path="soda/contracts/gold_metrics_contract.yml")
+    run_gold_scan(contract_path="soda/contracts/gold_performance_contract.yml")
+
+
 with DAG(
     dag_id="dag_stock_metrics",
     default_args=default_args,
@@ -91,6 +108,15 @@ with DAG(
     extract_metadata_task = extract_metadata()
     ingest_bronze_metadata_task = ingest_bronze_metadata()
     deduplicate_silver_metrics_task = deduplicate_silver_metrics()
+    validate_silver_metrics_task = validate_silver_metrics()
     load_gold_metrics_task = load_gold_metrics()
+    validate_gold_metrics_task = validate_gold_metrics()
 
-    extract_metadata_task >> ingest_bronze_metadata_task >> deduplicate_silver_metrics_task >> load_gold_metrics_task
+    (
+        extract_metadata_task
+        >> ingest_bronze_metadata_task
+        >> deduplicate_silver_metrics_task
+        >> validate_silver_metrics_task
+        >> load_gold_metrics_task
+        >> validate_gold_metrics_task
+    )

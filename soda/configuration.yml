@@ -1,0 +1,13 @@
+# Soda Core Configuration
+# For local Spark execution (used in PySpark Silver Layer)
+data_source spark:
+  type: spark
+
+# For local ClickHouse execution in Gold Layer (via MySQL Wire Protocol)
+data_source clickhouse:
+  type: mysql
+  host: ${CLICKHOUSE_HOST}
+  port: ${CLICKHOUSE_MYSQL_PORT}
+  username: ${CLICKHOUSE_USER}
+  password: ${CLICKHOUSE_PASSWORD}
+  database: ${CLICKHOUSE_DB}

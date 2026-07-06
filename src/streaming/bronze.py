@@ -32,36 +32,51 @@ def run_bronze(exec_date: str) -> None:
         logger.error("Invalid date format. Please use YYYY-MM-DD format.")
         sys.exit(1)
 
-    spark = create_spark_session()
-    try:
-        landing_file = LANDING_PRICES_DIR / f"tickers_{exec_date}.parquet"
-        try:
-            stock_df_raw = (
-                spark.read.format("parquet")
-                .load(str(landing_file))
-                .withColumn("ingestion_timestamp", current_timestamp())
+    landing_file = LANDING_PRICES_DIR / f"tickers_{exec_date}.parquet"
+
+    # Check if the file has already been archived (processed by another run)
+    if not landing_file.exists():
+        archive_file = ARCHIVE_PRICES_DIR / f"tickers_{exec_date}.parquet"
+        if archive_file.exists():
+            logger.info(
+                f"Prices file for {exec_date} already processed and archived at {archive_file}. "
+                "Skipping ingestion to prevent duplication."
             )
-        except Exception as e:
-            logger.warning(f"Failed to read landing stock price data: {e}. Exiting cleanly as folder might be empty.")
-            sys.exit(0)
+            return
 
-        try:
-            write_delta_table(stock_df_raw, BRONZE_PRICES_DIR, mode="append")
+        logger.warning(f"Prices file for {exec_date} not found in landing or archive. Skipping.")
+        return
 
-            if landing_file.exists():
-                dest_file = ARCHIVE_PRICES_DIR / landing_file.name
-                if dest_file.exists():
-                    dest_file.unlink()
-                shutil.move(str(landing_file), str(ARCHIVE_PRICES_DIR))
+    spark = create_spark_session()
 
-            logger.info(f"Successfully archived landing file to: {ARCHIVE_PRICES_DIR}")
-            logger.success("Bronze (Prices) pipeline completed successfully.")
-
-        except Exception as e:
-            logger.exception(f"Failed during Bronze prices pipeline execution: {e}")
-            sys.exit(1)
-    finally:
+    # Try reading the raw prices Parquet file
+    try:
+        stock_df_raw = (
+            spark.read.format("parquet").load(str(landing_file)).withColumn("ingestion_timestamp", current_timestamp())
+        )
+    except Exception as e:
+        logger.warning(f"Failed to read landing stock price data: {e}. Skipping.")
         spark.stop()
+        return
+
+    # Try writing to Bronze Delta table and archiving the raw file
+    try:
+        write_delta_table(stock_df_raw, BRONZE_PRICES_DIR, mode="append")
+
+        if landing_file.exists():
+            dest_file = ARCHIVE_PRICES_DIR / landing_file.name
+            if dest_file.exists():
+                dest_file.unlink()
+            shutil.move(str(landing_file), str(ARCHIVE_PRICES_DIR))
+
+        logger.info(f"Successfully archived landing file to: {ARCHIVE_PRICES_DIR}")
+        logger.success("Bronze (Prices) pipeline completed successfully.")
+    except Exception as e:
+        logger.exception(f"Failed during Bronze prices pipeline execution: {e}")
+        spark.stop()
+        raise e
+
+    spark.stop()
 
 
 def main() -> None:
@@ -92,7 +107,10 @@ def main() -> None:
     if not exec_date:
         exec_date = date.today().isoformat()
 
-    run_bronze(exec_date)
+    try:
+        run_bronze(exec_date)
+    except Exception:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

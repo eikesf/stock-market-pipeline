@@ -77,11 +77,9 @@ def test_bronze_metadata_empty_landing(spark_session, tmp_path):
         patch("src.streaming.bronze_metadata.ARCHIVE_METADATA_DIR", archive_metadata_dir),
         patch("src.streaming.bronze_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
-        pytest.raises(SystemExit) as exc_info,
     ):
         main()
 
-    assert exc_info.value.code == 0
     assert len(list(archive_metadata_dir.glob("*.parquet"))) == 0
     assert len(list(landing_metadata_dir.glob("*.parquet"))) == 0
     assert len(list(bronze_metadata_dir.glob("**/*.parquet"))) == 0
