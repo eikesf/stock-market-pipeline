@@ -30,6 +30,7 @@ services:
       - ../src:/opt/airflow/dags/src
       - ../.env:/opt/airflow/.env
       - ../data:/opt/airflow/data
+      - ../soda:/opt/airflow/soda
     env_file:
       - ../.env
     environment:
@@ -58,6 +59,7 @@ services:
       - ../src:/opt/airflow/dags/src
       - ../.env:/opt/airflow/.env
       - ../data:/opt/airflow/data
+      - ../soda:/opt/airflow/soda
     env_file:
       - ../.env
     environment:
@@ -91,6 +93,7 @@ services:
       - ../src:/opt/airflow/dags/src
       - ../.env:/opt/airflow/.env
       - ../data:/opt/airflow/data
+      - ../soda:/opt/airflow/soda
     env_file:
       - ../.env
     environment:
@@ -124,6 +127,7 @@ services:
       - ../src:/opt/airflow/dags/src
       - ../.env:/opt/airflow/.env
       - ../data:/opt/airflow/data
+      - ../soda:/opt/airflow/soda
     env_file:
       - ../.env
     environment:

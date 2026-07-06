@@ -39,6 +39,24 @@ def _load_prices_to_gold(spark: SparkSession, client: Client) -> None:
         col("stock_splits"),
         col("ingestion_timestamp"),
     )
+    # Clean prices before loading to Gold to satisfy quality contracts:
+    # 1. Price fields and volume must be strictly positive (greater than zero)
+    # 2. High must be >= low, open, and close
+    # 3. Low must be <= open and close
+    df_prices = df_prices.filter(
+        (col("open") > 0)
+        & (col("high") > 0)
+        & (col("low") > 0)
+        & (col("close") > 0)
+        & (col("adj_close") > 0)
+        & (col("volume") >= 0)
+        & (col("high") >= col("low"))
+        & (col("high") >= col("open"))
+        & (col("high") >= col("close"))
+        & (col("low") <= col("open"))
+        & (col("low") <= col("close"))
+    )
+
     df_prices_pd = cast("pd.DataFrame", df_prices.toPandas())
 
     if df_prices_pd.empty:

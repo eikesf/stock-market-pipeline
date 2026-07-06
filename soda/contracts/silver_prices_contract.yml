@@ -1,0 +1,115 @@
+checks for silver_prices:
+  # =========================================================================
+  # 1. Schema Validation (Structure and Column Types)
+  # =========================================================================
+  
+  # Ensure all critical database columns are present
+  - schema:
+      name: "Check for required columns in silver prices"
+      fail:
+        when required column missing:
+          - date
+          - ticker
+          - open
+          - high
+          - low
+          - close
+          - volume
+          - ingestion_timestamp
+
+  # Validate that columns have correct data types matching ClickHouse destination
+  - schema:
+      name: "Check for correct column types in silver prices"
+      fail:
+        when wrong column type:
+          date: date
+          ticker: string
+          open: decimal(10,2)
+          high: decimal(10,2)
+          low: decimal(10,2)
+          close: decimal(10,2)
+          adj_close: decimal(10,2)
+          volume: bigint
+          dividends: decimal(10,2)
+          stock_splits: decimal(10,4)
+          ingestion_timestamp: timestamp
+
+  # =========================================================================
+  # 2. Dataset Completeness & Uniqueness (Key constraints)
+  # =========================================================================
+
+  # Ensure the processing batch is not empty
+  - row_count > 0:
+      name: "Check that there are rows in the silver prices table"
+
+  # Key identifiers must never be null
+  - missing_count(ticker) = 0
+  - missing_count(date) = 0
+
+  # Ensure the composite primary key (ticker, date) is unique after deduplication
+  - duplicate_count(ticker, date) = 0
+
+  # =========================================================================
+  # 3. Value Range & Boundary Checks (OHLC and distributions)
+  # =========================================================================
+
+  # Stock prices must be non-negative values (can be zero for inactive/non-trading days in raw yfinance data)
+  - min(open) >= 0
+  - min(high) >= 0
+  - min(low) >= 0
+  - min(close) >= 0
+  - min(adj_close) >= 0
+
+  # Volume, dividends and stock splits can be zero but must never be negative
+  - min(volume) >= 0
+  - min(dividends) >= 0.0
+  - min(stock_splits) >= 0.0
+
+  # =========================================================================
+  # 4. Text Formatting & Cleanliness Constraints
+  # =========================================================================
+
+  # Tickers must follow standard uppercase naming convention (e.g. AAPL, PETR4.SA)
+  - failed rows:
+      name: "Check for invalid ticker format"
+      fail query: |
+        SELECT ticker
+        FROM silver_prices
+        WHERE ticker NOT RLIKE '^[A-Z0-9\\.\\-]+$'
+
+  # Verify yfinance raw suffix '=X' was cleaned up (renamed to USDBRL)
+  - failed rows:
+      name: "Check that yfinance raw exchange ticker 'USDBRL=X' was renamed to 'USDBRL'"
+      fail condition: ticker = 'USDBRL=X'
+
+  # =========================================================================
+  # 5. Logical Consistency (OHLC relationships & temporal rules)
+  # =========================================================================
+
+  # High price must be the highest value of the trading day (excluding non-trading/zero-volume days)
+  - failed rows:
+      name: "Check that high is always greater than or equal to low, open, and close"
+      fail query: |
+        SELECT ticker, date, high, low, open, close
+        FROM silver_prices
+        WHERE volume > 0 AND open > 0 AND (high < low OR high < open OR high < close)
+      warn: when > 0
+
+  # Low price must be the lowest value of the trading day (excluding non-trading/zero-volume days)
+  - failed rows:
+      name: "Check that low is always less than or equal to open and close"
+      fail query: |
+        SELECT ticker, date, high, low, open, close
+        FROM silver_prices
+        WHERE volume > 0 AND open > 0 AND (low > open OR low > close)
+      warn: when > 0
+
+  # Prevent future data leakage
+  - failed rows:
+      name: "Check that date is not in the future"
+      fail condition: date > CURRENT_DATE
+
+  # Ingestion date must be on or after the actual trading session date (allowing 1 day timezone buffer)
+  - failed rows:
+      name: "Check that ingestion_timestamp is on or after the trading date"
+      fail condition: cast(ingestion_timestamp as date) < date - INTERVAL 1 DAY

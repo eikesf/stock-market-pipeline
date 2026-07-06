@@ -56,6 +56,14 @@ def deduplicate_silver_prices(**context: Any) -> None:
     run_silver(exec_date=exec_date)
 
 
+@task(task_id="task_validate_silver_prices", pool="spark_write_pool")
+def validate_silver_prices() -> None:
+    """Validate Silver prices Delta table using Soda Core."""
+    from src.quality.soda_validator import run_silver_scan
+
+    run_silver_scan(table_name="silver_prices", contract_path="soda/contracts/silver_prices_contract.yml")
+
+
 @task(task_id="task_load_gold_prices", pool="spark_write_pool")
 def load_gold_prices(**context: Any) -> None:
     """Loads deduplicated stock prices from Silver Layer to Gold Layer using staging tables."""
@@ -79,6 +87,15 @@ def load_gold_prices(**context: Any) -> None:
     run_gold(exec_date=exec_date, table="prices")
 
 
+@task(task_id="task_validate_gold_prices")
+def validate_gold_prices() -> None:
+    """Validate Gold prices table and converted view in ClickHouse using Soda Core."""
+    from src.quality.soda_validator import run_gold_scan
+
+    run_gold_scan(contract_path="soda/contracts/gold_prices_contract.yml")
+    run_gold_scan(contract_path="soda/contracts/gold_prices_converted_contract.yml")
+
+
 with DAG(
     dag_id="dag_stock_prices",
     default_args=default_args,
@@ -91,6 +108,15 @@ with DAG(
     extract_prices_task = extract_prices()
     ingest_bronze_prices_task = ingest_bronze_prices()
     deduplicate_silver_prices_task = deduplicate_silver_prices()
+    validate_silver_prices_task = validate_silver_prices()
     load_gold_prices_task = load_gold_prices()
+    validate_gold_prices_task = validate_gold_prices()
 
-    extract_prices_task >> ingest_bronze_prices_task >> deduplicate_silver_prices_task >> load_gold_prices_task
+    (
+        extract_prices_task
+        >> ingest_bronze_prices_task
+        >> deduplicate_silver_prices_task
+        >> validate_silver_prices_task
+        >> load_gold_prices_task
+        >> validate_gold_prices_task
+    )

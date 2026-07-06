@@ -1,0 +1,196 @@
+checks for fact_company_metrics:
+  # =========================================================================
+  # 1. Schema Validation (Structure and Column Types)
+  # =========================================================================
+
+  # TODO: Ensure all required columns are present in the fact_company_metrics table
+  - schema:
+      name: "Check for required column in fact_company_metrics"
+      fail:
+        when required column missing:
+          - extraction_date
+          - ticker
+          - dividend_yield
+          - trailing_pe
+          - peg_ratio
+          - price_to_book
+          - enterprise_to_ebitda
+          - enterprise_to_ebit
+          - book_value
+          - trailing_eps
+          - price_to_sales
+          - operating_margins
+          - asset_turnover
+          - shares_outstanding
+          - market_cap
+          - ebitda
+          - total_debt
+          - total_cash
+          - debt_to_equity
+          - roa
+          - roe
+          - current_ratio
+          - gross_margins
+          - ebitda_margins
+          - profit_margins
+          - net_income_to_common
+          - ingestion_timestamp
+
+  # Validate that column types match the ClickHouse destination mapping
+  - schema:
+      name: "Check for correct column types in fact_company_metrics"
+      fail:
+        when wrong column type:
+          extraction_date: Date
+          ticker: LowCardinality(String)
+          dividend_yield: Nullable(Decimal(10, 4))
+          trailing_pe: Nullable(Decimal(10, 2))
+          peg_ratio: Nullable(Decimal(10, 4))
+          price_to_book: Nullable(Decimal(10, 4))
+          enterprise_to_ebitda: Nullable(Decimal(10, 4))
+          enterprise_to_ebit: Nullable(Decimal(10, 4))
+          book_value: Nullable(Decimal(10, 4))
+          trailing_eps: Nullable(Decimal(10, 4))
+          price_to_sales: Nullable(Decimal(10, 4))
+          operating_margins: Nullable(Decimal(10, 4))
+          asset_turnover: Nullable(Decimal(10, 4))
+          shares_outstanding: Nullable(UInt64)
+          market_cap: Nullable(UInt64)
+          ebitda: Nullable(Int64)
+          total_debt: Nullable(UInt64)
+          total_cash: Nullable(UInt64)
+          debt_to_equity: Nullable(Decimal(10, 4))
+          roa: Nullable(Decimal(10, 4))
+          roe: Nullable(Decimal(10, 4))
+          current_ratio: Nullable(Decimal(10, 4))
+          gross_margins: Nullable(Decimal(10, 4))
+          ebitda_margins: Nullable(Decimal(10, 4))
+          profit_margins: Nullable(Decimal(10, 4))
+          net_income_to_common: Nullable(Int64)
+          ingestion_timestamp: DateTime
+
+
+  # =========================================================================
+  # 2. Dataset Completeness & Uniqueness (Key constraints)
+  # =========================================================================
+
+  # Ensure the metrics fact table is populated
+  - row_count > 0:
+      name: "Monitor table row count and ensure it is populated"
+
+  # Primary identifiers (extraction_date, ticker) and ingestion metadata must never be null
+  - missing_count(extraction_date) = 0:
+      name: "Check that extraction_date is not missing"
+  - missing_count(ticker) = 0:
+      name: "Check that ticker is not missing"
+  - missing_count(ingestion_timestamp) = 0:
+      name: "Check that ingestion_timestamp is not missing"
+
+  # Ensure that the composite primary key (ticker, extraction_date) is unique
+  - duplicate_count(ticker, extraction_date) = 0:
+      name: "Check that the composite key (ticker, extraction_date) is unique"
+
+
+  # =========================================================================
+  # 3. Text Formatting & Cleanliness Constraints
+  # =========================================================================
+
+  # Ticker formatting check (uppercase alphanumeric, dots, and hyphens
+  - failed rows:
+      name: "Check that the ticker format is valid"
+      fail query: |
+        SELECT *
+        FROM fact_company_metrics
+        WHERE NOT match(ticker, '^[A-Z0-9\\.\\-]+$')
+
+
+  # =========================================================================
+  # 4. Range and Boundary Checks (Logical consistency of corporate finance metrics)
+  # =========================================================================
+
+  # Financial sizes and ratios must be non-negative when populated
+  - failed rows:
+      name: "Ensure financial sizes and ratios are non-negative when populated"
+      fail query: |
+        SELECT *
+        FROM fact_company_metrics
+        WHERE shares_outstanding < 0
+           OR market_cap < 0
+           OR total_debt < 0
+           OR total_cash < 0
+           OR current_ratio < 0
+           OR asset_turnover < 0
+           OR peg_ratio < 0
+           OR trailing_pe < 0
+
+  # Dividend yield must be between 0 and 200.0 (representing 0% to 200%)
+  - failed rows:
+      name: "Ensure dividend yield is between 0% and 200% (0.0 to 200.0)"
+      fail query: |
+        SELECT *
+        FROM fact_company_metrics
+        WHERE dividend_yield < 0 OR dividend_yield > 200.0
+
+  # Margin ratios (gross, operating, ebitda, profit margins) should be between -10.0 and 1.0
+  - failed rows:
+      name: "Ensure margin ratios are realistic (between -10.0 and 1.0)"
+      fail query: |
+        SELECT *
+        FROM fact_company_metrics
+        WHERE gross_margins < -10.0 OR gross_margins > 1.0
+           OR operating_margins < -10.0 OR operating_margins > 1.0
+           OR ebitda_margins < -10.0 OR ebitda_margins > 1.0
+           OR profit_margins < -10.0 OR profit_margins > 1.0
+      warn: when > 0
+
+  # Logical Consistency: If shares are outstanding, market cap must be populated and positive
+  - failed rows:
+      name: "Check that market cap is populated when shares outstanding is positive"
+      fail query: |
+        SELECT *
+        FROM fact_company_metrics
+        WHERE shares_outstanding > 0 AND (market_cap IS NULL OR market_cap <= 0)
+
+
+  # =========================================================================
+  # 5. Temporal Consistency & Audit Rules
+  # =========================================================================
+
+  # Extraction date cannot be in the future
+  - failed rows:
+      name: "Check that extraction_date is not in the future"
+      fail query: |
+        SELECT *
+        FROM fact_company_metrics
+        WHERE extraction_date > today() + 1
+
+  # Ingestion timestamp cannot be in the future and must occur after or on the extraction date
+  - failed rows:
+      name: "Check that ingestion_timestamp is not in the future and is after extraction_date"
+      fail query: |
+        SELECT *
+        FROM fact_company_metrics
+        WHERE ingestion_timestamp > now() OR ingestion_timestamp < extraction_date - INTERVAL 1 DAY
+
+
+  # =========================================================================
+  # 6. Advanced Governance & Cross-Table Rules
+  # =========================================================================
+
+  # Referential Integrity - Check that all tickers in fact_company_metrics exist in dim_companies (excluding USDBRL)
+  - failed rows:
+      name: "Ensure all tickers in fact_company_metrics exist in dim_companies"
+      fail query: |
+        SELECT DISTINCT ticker
+        FROM fact_company_metrics
+        WHERE ticker != 'USDBRL'
+          AND ticker NOT IN (SELECT DISTINCT ticker FROM dim_companies)
+      warn: when > 0
+
+  # Freshness Check - Ensure that the most recent metrics extraction is not older than 7 days
+  - failed rows:
+      name: "Check that the most recent metrics extraction is not older than 7 days"
+      fail query: |
+        SELECT max(extraction_date)
+        FROM fact_company_metrics
+        HAVING max(extraction_date) < today() - INTERVAL 7 DAY

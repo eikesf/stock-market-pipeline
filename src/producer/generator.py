@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 import yfinance as yf
 
-from src.producer.config import LANDING_PRICES_DIR
+from src.producer.config import ARCHIVE_PRICES_DIR, LANDING_PRICES_DIR
 from src.producer.tickers import get_all_tickers
 from src.utils.logger import logger
 
@@ -70,6 +70,16 @@ def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
         SystemExit: If the download fails, no tickers are found, or saving the
             parquet file fails.
     """
+    # Check if a file for the execution date already exists in landing or archive directory
+    target_path = f"tickers_{exec_date}.parquet"
+    in_landing = (LANDING_PRICES_DIR / target_path).exists()
+    in_archive = (ARCHIVE_PRICES_DIR / target_path).exists()
+
+    if in_landing or in_archive:
+        location = "landing" if in_landing else "archive"
+        logger.info(f"Prices file for {exec_date} already exists in {location}. Skipping download.")
+        return
+
     # Convert exec_date to a date object to calculate the next day
     exec_date_obj = date.fromisoformat(exec_date)
 
