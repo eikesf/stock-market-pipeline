@@ -24,7 +24,7 @@ def clean_float(val: object, default: float | None = None) -> float | None:
 
     if val_str not in ("nan", "n/a", "null", "none", ""):
         try:
-            return float(val)
+            return float(val_str)
         except (ValueError, TypeError):
             pass
     return default
@@ -42,7 +42,7 @@ def clean_int(val: object, default: int | None = None) -> int | None:
     val_str = str(val).strip().lower()
     if val_str not in ("infinity", "inf", "-infinity", "-inf", "nan", "n/a", "null", "none", ""):
         try:
-            return int(float(val))
+            return int(float(val_str))
         except (ValueError, TypeError):
             pass
     return default
