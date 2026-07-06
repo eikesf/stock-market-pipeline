@@ -1,0 +1,177 @@
+checks for v_fact_prices_converted:
+  # =========================================================================
+  # 1. Schema Validation (Structure and Column Types)
+  # =========================================================================
+
+  # Ensure all required columns are present in the v_fact_prices_converted view
+  - schema:
+      name: "Check for required columns in v_fact_prices_converted"
+      fail:
+        when required column missing:
+          - ticker
+          - currency
+          - date
+          - volume
+          - usd_brl
+          - open_brl
+          - high_brl
+          - low_brl
+          - close_brl
+          - adj_close_brl
+          - open_usd
+          - high_usd
+          - low_usd
+          - close_usd
+          - adj_close_usd
+
+  # Validate that column types match the ClickHouse view definition
+  - schema:
+      name: "Check for correct column types in v_fact_prices_converted"
+      fail:
+        when wrong column type:
+          ticker: LowCardinality(String)
+          currency: LowCardinality(String)
+          date: Date
+          volume: UInt64
+          usd_brl: Nullable(Decimal(10, 2))
+          open_brl: Nullable(Decimal(18, 4))
+          high_brl: Nullable(Decimal(18, 4))
+          low_brl: Nullable(Decimal(18, 4))
+          close_brl: Nullable(Decimal(18, 4))
+          adj_close_brl: Nullable(Decimal(18, 4))
+          open_usd: Nullable(Decimal(18, 4))
+          high_usd: Nullable(Decimal(18, 4))
+          low_usd: Nullable(Decimal(18, 4))
+          close_usd: Nullable(Decimal(18, 4))
+          adj_close_usd: Nullable(Decimal(18, 4))         
+
+
+  # =========================================================================
+  # 2. Dataset Completeness & Uniqueness (Key constraints)
+  # =========================================================================
+
+  # Ensure the converted prices view is populated
+  - row_count > 0:
+      name: "Monitor view row count and ensure it is populated"
+
+  # Primary identifiers must never be null
+  - missing_count(ticker) = 0
+  - missing_count(date) = 0
+  - missing_count(currency) = 0
+  - missing_count(volume) = 0
+
+  # Ensure currency contains only expected whitelisted values
+  - invalid_count(currency) = 0:
+      name: "Check that currency contains only USD or BRL"
+      valid values: [USD, BRL]
+
+  # Ensure that the composite key (ticker, date) is unique
+  - duplicate_count(ticker, date) = 0:
+      name: "Check that the composite key (ticker, date) is unique"
+
+  # =========================================================================
+  # 3. Currency Consistency & Conversion Logic Checks
+  # =========================================================================
+
+  # For BRL currency stocks, BRL price fields must exactly equal the original prices in fact_prices
+  - failed rows:
+      name: "BRL currency stocks must be equal to fact_prices"
+      fail query: |
+          SELECT fpc.ticker, fpc.date
+          FROM v_fact_prices_converted fpc
+          INNER JOIN stock_market.fact_prices fp ON fpc.ticker = fp.ticker AND fpc.date = fp.date
+          WHERE fpc.currency = 'BRL' AND (
+            fpc.open_brl != fp.open OR
+            fpc.high_brl != fp.high OR
+            fpc.low_brl != fp.low OR
+            fpc.close_brl != fp.close OR
+            fpc.adj_close_brl != fp.adj_close
+          )
+
+  # For USD currency stocks, USD price fields must exactly equal the original prices in fact_prices
+  - failed rows:
+      name: "USD currency stocks must be equal to fact_prices"
+      fail query: |
+          SELECT fpc.ticker, fpc.date
+          FROM v_fact_prices_converted fpc
+          INNER JOIN stock_market.fact_prices fp ON fpc.ticker = fp.ticker AND fpc.date = fp.date
+          WHERE fpc.currency = 'USD' AND (
+            fpc.open_usd != fp.open OR
+            fpc.high_usd != fp.high OR
+            fpc.low_usd != fp.low OR
+            fpc.close_usd != fp.close OR
+            fpc.adj_close_usd != fp.adj_close
+          )
+
+  # Convert check - BRL prices must be equal to USD prices multiplied by usd_brl rate (within small rounding margin)
+  - failed rows:
+      name: "BRL prices must be equal to USD prices multiplied by usd_brl rate"
+      fail query: |
+        SELECT ticker, date
+        FROM v_fact_prices_converted
+        WHERE currency = 'USD'   AND (
+          abs(open_brl - (open_usd * usd_brl)) > 0.01 OR
+          abs(high_brl - (high_usd * usd_brl)) > 0.01 OR
+          abs(low_brl - (low_usd * usd_brl)) > 0.01 OR
+          abs(close_brl - (close_usd * usd_brl)) > 0.01 OR
+          abs(adj_close_brl - (adj_close_usd * usd_brl)) > 0.01
+        )
+
+
+  # =========================================================================
+  # 4. Range and Boundary Checks
+  # =========================================================================
+
+  # Price fields and exchange rate (usd_brl) must be positive when populated and volume > 0
+  - failed rows:
+      name: "Check that price fields and exchanges rates are positive"
+      fail query: |
+        SELECT ticker, date
+        FROM v_fact_prices_converted
+        WHERE volume > 0 AND 
+          (open_brl <= 0 OR high_brl <= 0 OR low_brl <= 0 OR close_brl <= 0 OR adj_close_brl <=0
+           OR open_usd <= 0 OR high_usd <= 0 OR low_usd <= 0 OR close_usd <= 0 OR adj_close_usd <=0
+           OR usd_brl <= 0)
+
+  # Ensure exchange rate is within realistic economic bounds (2.0 to 10.0)
+  - failed rows:
+      name: "Ensure exchange rate is within realistic economic bounds (2.0 to 10.0)"
+      fail query: |
+        SELECT ticker, date, usd_brl
+        FROM v_fact_prices_converted
+        WHERE usd_brl IS NOT NULL AND (usd_brl < 2.0 OR usd_brl > 10.0)
+      warn: when > 0
+
+  # Converted logical boundaries (high_brl >= open_brl, high_usd >= open_usd, etc. when volume > 0)
+  - failed rows:
+      name: "Check that converted boundaries are consistent"
+      fail query: |
+        SELECT ticker, date
+        FROM v_fact_prices_converted
+        WHERE volume > 0 AND (
+          high_brl < low_brl OR high_brl < open_brl OR high_brl < close_brl OR low_brl > open_brl OR low_brl > close_brl
+          OR
+          high_usd < low_usd OR high_usd < open_usd OR high_usd < close_usd OR low_usd > open_usd OR low_usd > close_usd)
+
+
+  # =========================================================================
+  # 5. Temporal Consistency & SLA Rules
+  # =========================================================================
+
+  # Date cannot be in the future
+  - failed rows:
+      name: "Check that date column are not in the future"
+      fail query: |
+        SELECT *
+        FROM v_fact_prices_converted
+        WHERE date > today()
+
+  # Ensure that the exchange rate (usd_brl) is populated for recent dates (ASOF join is functioning)
+  - failed rows:
+      name: "Check that exchange rate is populated for recent dates"
+      fail query: |
+        SELECT ticker, date
+        FROM v_fact_prices_converted
+        WHERE date >= today() - INTERVAL 4 DAY
+          AND usd_brl IS NULL
+        

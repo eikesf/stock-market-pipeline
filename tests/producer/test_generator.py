@@ -21,40 +21,91 @@ class TestPriceGenerator:
             [
                 ("Open", "AAPL"),
                 ("Open", "PETR4.SA"),
+                ("Open", "USDBRL=X"),
                 ("Close", "AAPL"),
                 ("Close", "PETR4.SA"),
+                ("Close", "USDBRL=X"),
                 ("High", "AAPL"),
                 ("High", "PETR4.SA"),
+                ("High", "USDBRL=X"),
                 ("Low", "AAPL"),
                 ("Low", "PETR4.SA"),
+                ("Low", "USDBRL=X"),
                 ("Adj Close", "AAPL"),
                 ("Adj Close", "PETR4.SA"),
+                ("Adj Close", "USDBRL=X"),
                 ("Volume", "AAPL"),
                 ("Volume", "PETR4.SA"),
+                ("Volume", "USDBRL=X"),
                 ("Dividends", "AAPL"),
                 ("Dividends", "PETR4.SA"),
+                ("Dividends", "USDBRL=X"),
                 ("Stock Splits", "AAPL"),
                 ("Stock Splits", "PETR4.SA"),
+                ("Stock Splits", "USDBRL=X"),
             ]
         )
 
-        data = [[150.0, 30.0, 152.0, 31.0, 153.0, 32.0, 149.0, 29.0, 152.0, 31.0, 1000, 5000, 0.0, 0.0, 0.0, 0.0]]
+        data = [
+            [
+                150.0,
+                30.0,
+                5.40,
+                152.0,
+                31.0,
+                5.42,
+                153.0,
+                32.0,
+                5.45,
+                149.0,
+                29.0,
+                5.39,
+                152.0,
+                31.0,
+                5.42,
+                1000,
+                5000,
+                0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+        ]
 
         mock_df = pd.DataFrame(data, columns=columns, index=pd.to_datetime(["2026-05-26"]))
         mock_df.index.name = "Date"
         mock_download.return_value = mock_df
 
-        run_generator("2026-05-26")
+        df_saved = None
+        saved_args = ()
+        saved_kwargs = {}
 
-        mock_to_parquet.assert_called_once()
-        call_args, call_kwargs = mock_to_parquet.call_args
+        def save_df(df_self, *args, **kwargs):
+            nonlocal df_saved, saved_args, saved_kwargs
+            df_saved = df_self
+            saved_args = args
+            saved_kwargs = kwargs
 
-        dest_path = call_args[0]
+        with patch("pandas.DataFrame.to_parquet", save_df):
+            run_generator("2026-05-26")
+
+        assert df_saved is not None
+        assert "USDBRL=X" in df_saved["ticker"].to_numpy()
+        usd_row = df_saved[df_saved["ticker"] == "USDBRL=X"].iloc[0]
+        assert usd_row["close"] == 5.42
+        assert usd_row["open"] == 5.40
+        assert usd_row["volume"] == 0
+
+        # Restaura os asserts originais de salvamento do arquivo Parquet
+        dest_path = saved_args[0]
         assert "tickers_2026-05-26.parquet" in str(dest_path)
-        assert call_kwargs["index"] is False
-        assert call_kwargs["compression"] == "snappy"
-        assert call_kwargs["engine"] == "pyarrow"
-        assert call_kwargs["coerce_timestamps"] == "us"
+        assert saved_kwargs.get("index") is False
+        assert saved_kwargs.get("compression") == "snappy"
+        assert saved_kwargs.get("engine") == "pyarrow"
+        assert saved_kwargs.get("coerce_timestamps") == "us"
 
     def test_run_generator_success_single_index(self, mock_to_parquet, mock_download, mock_get_all_tickers):
         """

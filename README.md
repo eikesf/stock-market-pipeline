@@ -18,7 +18,7 @@ The ingestion and Medallion steps are fully orchestrated using **Apache Airflow 
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
 - [Getting Started](#getting-started)
-- [Code Quality](#code-quality)
+- [Code Quality & Data Validation](#code-quality--data-validation)
 - [Airflow Orchestration](#airflow-orchestration)
 - [Executing the Pipelines](#executing-the-pipelines)
 - [Running the Tests](#running-the-tests)
@@ -30,7 +30,7 @@ The ingestion and Medallion steps are fully orchestrated using **Apache Airflow 
 
 ## Architecture & Pipelines
 
-Two parallel ELT pipelines populate a Star Schema in ClickHouse (`fact_prices` as the Fact Table and `dim_companies` as the Dimension Table).
+Three pipelines populate a Star Schema and analytical views in ClickHouse (`fact_prices` and `fact_company_metrics` as Fact Tables, `dim_companies` as the Dimension Table, and `v_companies_performance` and `v_fact_prices_converted` as the analytical views).
 
 ```mermaid
 graph LR
@@ -64,16 +64,30 @@ graph LR
         T_SLV_P -->|"PySpark"| T_GLD_P
     end
 
-    %% ── Monthly Pipeline ─────────────────────────────────────────
+    %% ── Monthly Metadata Pipeline ─────────────────────────────────
     subgraph DAG_Metadata ["DAG: dag_stock_metadata"]
-        T_EXT_M["task_extract_metadata<br/>(Landing · JSON)"]
-        T_BRZ_M["task_ingest_bronze_metadata<br/>(Bronze · Delta)"]
+        T_EXT_M1["task_extract_metadata<br/>(Landing · JSON)"]
+        T_BRZ_M1["task_ingest_bronze_metadata<br/>(Bronze · Delta)"]
         T_SLV_M["task_deduplicate_silver_metadata<br/>(Silver · Delta)"]
+        
+        T_GLD_MET["task_load_gold_metrics<br/>(Gold · Direct)"]
         T_GLD_M["task_load_gold_metadata<br/>(Gold · Staging)"]
 
-        T_EXT_M -->|"PySpark"| T_BRZ_M
-        T_BRZ_M -->|"PySpark"| T_SLV_M
+        T_EXT_M1 -->|"PySpark"| T_BRZ_M1
+        T_BRZ_M1 -->|"PySpark"| T_SLV_M
         T_SLV_M -->|"PySpark"| T_GLD_M
+    end
+
+    %% ── Weekly Metrics Pipeline ───────────────────────────────────
+    subgraph DAG_Metrics ["DAG: dag_stock_metrics"]
+        T_EXT_M2["task_extract_metadata<br/>(Landing · JSON)"]
+        T_BRZ_M2["task_ingest_bronze_metadata<br/>(Bronze · Delta)"]
+        T_SLV_MET["task_deduplicate_silver_metrics<br/>(Silver · Delta)"]
+        T_GLD_MET["task_load_gold_metrics<br/>(Gold · Direct)"]
+
+        T_EXT_M2 -->|"PySpark"| T_BRZ_M2
+        T_BRZ_M2 -->|"PySpark"| T_SLV_MET
+        T_SLV_MET -->|"PySpark"| T_GLD_MET
     end
 
     %% ── Weekly Maintenance Pipeline ──────────────────────────────
@@ -84,29 +98,43 @@ graph LR
     %% ── OLAP Storage ─────────────────────────────────────────────
     subgraph ClickHouse ["Gold Layer  ·  ClickHouse (OLAP)"]
         G_FACT["table: fact_prices"]
+        G_MET["table: fact_company_metrics"]
         G_DIM["table: dim_companies"]
+        G_PERF["view: v_companies_performance"]
+        G_CONV["view: v_fact_prices_converted"]
+        
         G_FACT -.->|"Star Schema"| G_DIM
+        G_MET -.->|"Star Schema"| G_DIM
+        G_DIM --> G_PERF
+        G_MET --> G_PERF
+        G_FACT --> G_CONV
+        G_DIM --> G_CONV
     end
 
     %% ── Control & Data Flows ─────────────────────────────────────
     %% Orchestration (dashed) — schedule on the arrows
     Airflow -.->|"Mon–Fri · 22:00 UTC"| T_EXT_P
-    Airflow -.->|"@monthly"| T_EXT_M
+    Airflow -.->|"@monthly"| T_EXT_M1
+    Airflow -.->|"@weekly"| T_EXT_M2
     Airflow -.->|"@weekly"| T_MNT
 
     %% Extraction (bold)
     YF_API ==>|"OHLCV Data"| T_EXT_P
-    YF_API ==>|"Metadata"| T_EXT_M
+    YF_API ==>|"Metadata"| T_EXT_M1
+    YF_API ==>|"Metadata"| T_EXT_M2
 
     %% Loading (bold)
     T_GLD_P ==>|"Load"| G_FACT
     T_GLD_M ==>|"Load"| G_DIM
+    T_GLD_MET ==>|"Load"| G_MET
 
     %% Maintenance (dashed)
     T_MNT -.->|"Compaction & Vacuum"| T_BRZ_P
-    T_MNT -.->|"Compaction & Vacuum"| T_BRZ_M
+    T_MNT -.->|"Compaction & Vacuum"| T_BRZ_M1
+    T_MNT -.->|"Compaction & Vacuum"| T_BRZ_M2
     T_MNT -.->|"Compaction & Vacuum"| T_SLV_P
     T_MNT -.->|"Compaction & Vacuum"| T_SLV_M
+    T_MNT -.->|"Compaction & Vacuum"| T_SLV_MET
 
     %% ── Class Definitions ────────────────────────────────────────
     classDef orchestrator fill:#e62464,stroke:#c2185b,stroke-width:2px,color:#fff
@@ -127,20 +155,23 @@ graph LR
     class YF_API api
     class Wiki,BRAPI source
     class Tickers tickerList
-    class T_EXT_P,T_EXT_M landing
-    class T_BRZ_P,T_BRZ_M bronze
-    class T_SLV_P,T_SLV_M silver
-    class T_GLD_P,T_GLD_M,T_MNT gold
+    class T_EXT_P,T_EXT_M1,T_EXT_M2 landing
+    class T_BRZ_P,T_BRZ_M1,T_BRZ_M2 bronze
+    class T_SLV_P,T_SLV_M,T_SLV_MET silver
+    class T_GLD_P,T_GLD_M,T_GLD_MET,T_MNT gold
     class Sources sourceBox
-    class DAG_Prices,DAG_Metadata,DAG_Maintenance dagBox
+    class DAG_Prices,DAG_Metadata,DAG_Metrics,DAG_Maintenance dagBox
     class ClickHouse olapBox
-    class G_FACT,G_DIM olapTable
+    class G_FACT,G_DIM,G_MET,G_PERF,G_CONV olapTable
 ```
 
 
 **Pipeline A - Daily Stock Prices (Fact):** extracts daily OHLCV time-series from `yfinance`, stores raw Parquet files in the Landing zone, ingests into Delta Lake (Bronze), deduplicates via PySpark window functions (Silver), and loads into ClickHouse as `fact_prices`.
 
-**Pipeline B - Monthly Metadata (Dimension):** extracts company information (sector, industry, country, isin, full_time_employees, exchange, currency, market cap, dividend yield) from `yfinance`, follows the same Bronze/Silver medallion flow, and loads into ClickHouse as `dim_companies`.
+**Pipeline B - Weekly & Monthly Company Data Pipelines (Dimension, Fact, and View):** extracts company details and financial fundamentals (such as debt, cash, EBITDA, valuation metrics) from `yfinance`. It stores Parquet extractions in Landing, loads them into Delta Bronze, and then splits into two parallel Silver & Gold paths managed by separate DAGs:
+- **Metadata track (Monthly DAG)**: Deduplicates and tracks changes via Slowly Changing Dimension (SCD) Type 2 in `dim_companies`.
+- **Metrics track (Weekly DAG)**: Captures weekly snapshots of investment, valuation, and debt metrics in `fact_company_metrics`.
+- **Analytical View**: Computes dynamic indicators (Valuation, Debt, Efficiency, Profitability ratios) in `v_companies_performance`.
 
 ---
 
@@ -153,7 +184,8 @@ graph LR
 | **Java Environment** | OpenJDK | `21` | JVM runtime required by Apache Spark 4.x. |
 | **Bronze / Silver** | PySpark + Delta Lake | `Spark 4.1.1` · `Delta 4.2.0` | ACID transactions, time travel, schema enforcement, and window-based deduplication. |
 | **Gold / OLAP** | ClickHouse | `25.8 LTS (Alpine)` | Columnar OLAP database providing sub-second aggregations on large datasets. |
-| **Database Driver** | clickhouse-connect | `1.0.0` | Official lightweight Python connector; no JDBC dependency required. |
+| **Database Driver** | clickhouse-connect | `>=1.3.0` | Official lightweight Python connector; no JDBC dependency required. |
+| **Airflow Provider** | apache-airflow-providers-clickhousedb | `>=1.0.0` | Official ClickHouse provider hook for seamless integration with Airflow connections. |
 | **Orchestration** | Apache Airflow | `3.2.2` | Decoupled architecture (`api-server`, `scheduler`, `dag-processor`) orchestrating Medallion tasks. |
 | **Metastore** | PostgreSQL | `18-alpine` | Metadata database for Apache Airflow. |
 | **Package Manager** | uv | `0.11.19` | Fast, deterministic Python dependency resolution with lockfile support. |
@@ -179,30 +211,38 @@ stock_market_pipeline/
 │   ├── dags/                # Python DAG definitions
 │   │   ├── dag_delta_maintenance.py # Weekly Delta maintenance DAG
 │   │   ├── dag_stock_metadata.py # Monthly metadata ingestion DAG
+│   │   ├── dag_stock_metrics.py  # Weekly metrics ingestion DAG
 │   │   └── dag_stock_prices.py   # Daily stock prices ingestion DAG
 │   ├── config/              # Autogenerated configs and admin secrets
 │   └── logs/                # Task execution logs
 ├── data/                    # Shared data volume (created at runtime)
 │   ├── bronze/              # Delta Bronze layer (prices/ & metadata/)
 │   ├── landing/             # Raw extractions (prices/ & metadata/)
-│   └── silver/              # Delta Silver layer (prices/ & metadata/)
+│   └── silver/              # Delta Silver layer (prices/, metadata/, metrics/)
 ├── docker/
 │   ├── Dockerfile           # Python 3.13 + Java 21 image
 │   └── docker-compose.yml   # Full multi-service stack (Airflow, ClickHouse, Python)
+├── soda/                    # Soda Core quality configurations and contracts
+│   ├── configuration.yml    # Database credentials for scans
+│   ├── run_silver_scans.py  # Spark/Delta programmatic validation runner
+│   └── contracts/           # SodaCL contract schema files (Silver & Gold)
 ├── src/
-│   ├── db_init/init.sql     # ClickHouse DDL (auto-run on first boot)
+│   ├── db_init/             # ClickHouse DDL & migrations
+│   │   ├── init.sql         # ClickHouse DDL (auto-run on first boot)
 │   ├── producer/            # Landing layer (extraction)
 │   │   ├── config.py        # Configs and path mappings
 │   │   ├── generator.py     # Pipeline A: prices extractor
 │   │   ├── metadata_generator.py # Pipeline B: metadata extractor
 │   │   └── tickers.py       # Monitored tickers (NASDAQ, B3, NYSE)
+│   ├── quality/             # Soda Core programmatic validation wrappers
+│   │   └── soda_validator.py # Spark/Delta and ClickHouse validator functions
 │   ├── streaming/           # Medallion layers (Spark/Delta/ClickHouse)
 │   │   ├── spark_session.py # SparkSession factory
 │   │   ├── utils.py         # Shared IO utilities (Delta read/write & ClickHouse)
 │   │   ├── bronze.py        # Bronze: prices ingestion
 │   │   ├── silver.py        # Silver: prices deduplication
 │   │   ├── bronze_metadata.py # Bronze: metadata ingestion
-│   │   ├── silver_metadata.py # Silver: metadata deduplication
+│   │   ├── silver_metadata.py # Silver: metadata & metrics deduplication
 │   │   ├── gold.py          # Gold: ClickHouse writer
 │   │   └── maintenance.py   # Delta Lake table maintenance (compaction + vacuum)
 │   └── utils/
@@ -225,11 +265,19 @@ stock_market_pipeline/
 
 ### 1 — Configure environment variables
 
-Duplicate the environment variables file and configure your credentials in the new `.env` file:
+Duplicate the environment variables template file and configure your credentials in the new `.env` file:
 
 ```bash
 cp .env.example .env
 ```
+
+Ensure you configure the following key environment variables:
+- **ClickHouse Credentials**: `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` to secure the database.
+- **Airflow Admin**: `AIRFLOW_ADMIN_USER`, `AIRFLOW_ADMIN_PASSWORD`, and `AIRFLOW_ADMIN_EMAIL` for accessing the Web UI.
+- **Alerts Configuration**:
+  - `ALERT_EMAIL`: Recipient email address for receiving formatted HTML task failure notifications.
+  - `AIRFLOW_CONN_SMTP_DEFAULT`: SMTP Connection URI (e.g. `smtp://user%40gmail.com:app_password@smtp.gmail.com:587?disable_ssl=true&from_email=user%40gmail.com`) used by Airflow's email system. Note that special characters in the email address (like `@`) must be URL-encoded (e.g., `%40`).
+  - `DISCORD_WEBHOOK_URL`: Discord webhook URL to receive detailed real-time rich-embed task failure notifications in your Discord server.
 
 
 ### 2 — Build and start the containers
@@ -267,7 +315,9 @@ make airflow_up   # Start only the Airflow orchestration services
 
 ---
 
-## Code Quality
+## Code Quality & Data Validation
+
+### Code Quality
 
 This project uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting, 
 configured in `pyproject.toml`.
@@ -290,6 +340,27 @@ uv run ruff format .         # apply formatting
 ```
 
 The CI pipeline runs both checks automatically on every push and pull request.
+
+### Data Quality & Validation (Soda Core)
+
+Automated data quality contracts are integrated in both the **Silver** and **Gold** layers of the Medallion architecture using **Soda Core** and **SodaCL**.
+
+*   **Silver Layer Validation**: Ensures structural, schema, and volume integrity of our local Delta tables (`silver_prices`, `silver_metadata`, `silver_metrics`) using Spark sessions. Delta tables are loaded dynamically as temporary views in PySpark before running the scans.
+*   **Gold Layer Validation**: Ensures that OLAP analytical tables and views loaded in the ClickHouse database (`fact_prices`, `dim_companies`, `fact_company_metrics`, `v_companies_performance`, `v_fact_prices_converted`) conform to the business expectations using ClickHouse's MySQL wire protocol (port `9004`).
+
+#### Contract Schema files:
+*   **Silver Contracts**: Located at `soda/contracts/silver_*.yml`
+*   **Gold Contracts**: Located at `soda/contracts/gold_*.yml`
+
+#### Running scans manually inside the container:
+```bash
+make soda_silver  # Run Soda Core quality contracts on Silver Delta tables
+make soda_gold    # Run Soda Core quality contracts on Gold ClickHouse tables/views
+make soda_all     # Run all quality contracts (both Silver and Gold)
+```
+
+#### Airflow Integration:
+Each pipeline contains dedicated validation tasks (e.g., `task_validate_silver_prices`, `task_validate_gold_prices`, `task_validate_silver_metrics`, `task_validate_gold_metrics`) executed directly by the scheduler. A contract violation will raise a `ValueError`, immediately failing the task and halting any downstream processes.
 
 ---
 
@@ -314,10 +385,33 @@ The Airflow Web UI is accessible at [http://localhost:8080](http://localhost:808
     *   **Flow:** Extracts prices to Landing → Ingests to Bronze → Deduplicates to Silver → Loads `fact_prices` in ClickHouse.
 2.  **`dag_stock_metadata`** (Monthly Pipeline):
     *   **Schedule:** Runs monthly (`@monthly`).
-    *   **Flow:** Extracts company profiles to Landing → Ingests to Bronze → Deduplicates to Silver → Loads `dim_companies` in ClickHouse.
-3.  **`dag_delta_maintenance`** (Weekly Maintenance Pipeline):
+    *   **Flow:** Extracts company profiles to Landing → Ingests to Bronze → Deduplicates Silver Metadata → Loads `dim_companies` in ClickHouse (SCD Type 2).
+3.  **`dag_stock_metrics`** (Weekly Pipeline):
+    *   **Schedule:** Runs weekly (`@weekly`).
+    *   **Flow:** Extracts company profiles to Landing → Ingests to Bronze → Deduplicates Silver Metrics → Loads `fact_company_metrics` in ClickHouse.
+4.  **`dag_delta_maintenance`** (Weekly Maintenance Pipeline):
     *   **Schedule:** Runs weekly on Sundays (`@weekly`).
-    *   **Flow:** Runs compaction (`OPTIMIZE`) and cleanup (`VACUUM`) on the Bronze and Silver Delta tables to resolve the small file problem and manage storage.
+    *   **Flow:** Runs compaction (`OPTIMIZE`) and cleanup (`VACUUM`) on the Bronze and Silver Delta tables (including prices, metadata, and metrics) to resolve the small file problem and manage storage.
+
+### Task Failure Notifications
+
+All DAGs are configured with custom failure callbacks to immediately report failures:
+*   **Rich HTML Email Alerts**: Real-time emails containing structured details (DAG ID, Task ID, operator class, execution date, attempt number, task duration, log links, and the full exception stack trace).
+*   **Discord Webhook Embeds**: Formatted rich embeds sent to Discord containing key execution metadata, a link to the Airflow logs, and the exception.
+
+### Spark Write Serialization & Pools
+
+Because Apache Spark and Delta Lake operations are resource-heavy and local file writes can conflict when executed in parallel (e.g., deduplicating silver metadata and metrics concurrently), the DAGs use an Airflow pool named `spark_write_pool`.
+
+*   **Configuration:** This pool is automatically created with **1 slot** on the first DAG run.
+*   **Purpose:** Enforces sequential execution for tasks that write to Delta tables or ClickHouse, preventing transaction conflicts (`ConcurrentAppendException`, file locking, etc.) while allowing the rest of the DAGs (like data extraction) to run in parallel.
+
+### ClickHouse Connection Integration
+
+Airflow tasks communicate with ClickHouse using the official hook provided by `apache-airflow-providers-clickhousedb`:
+*   **Connection ID**: `clickhouse_default`
+*   **Connection Type**: `clickhouse` (instead of `generic`)
+*   **Usage**: The parameters are resolved dynamically via `ClickHouseHook.get_connection("clickhouse_default")` and set as environment variables before invoking the Spark pipeline runner, keeping credentials secure and centralized in Airflow.
 
 ---
 
@@ -340,6 +434,9 @@ make run_metadata # Run only the Metadata pipeline (Monthly)
 make run_landing_prices     # Extract daily prices from yfinance
 make run_landing_metadata   # Extract company metadata from yfinance
 ```
+
+> [!NOTE]
+> Extractions from Yahoo Finance are configured with `progress=False` to silence interactive progress bars, keeping Airflow task execution and container logging clean.
 
 #### Bronze
 
@@ -412,11 +509,11 @@ defined in `pyproject.toml` under `[tool.pytest.ini_options]`.
 
 Connect with DataGrip, DBeaver, or any ClickHouse-compatible client to `localhost:8123` using the credentials from your `.env` file.
 
-### Dimension Table: `stock_market.dim_companies`
+### Dimension Table: `stock_market.dim_companies` (SCD Type 2)
 
 | Column | Type | Sorting Key | Description |
 |---|---|---|---|
-| `ticker` | LowCardinality(String) | Yes | Stock ticker symbol |
+| `ticker` | LowCardinality(String) | Yes | Stock ticker symbol (e.g., AAPL, GOOGL) |
 | `short_name` | String | | Company display name |
 | `sector` | LowCardinality(String) | | GICS sector classification |
 | `industry` | LowCardinality(String) | | Industry classification |
@@ -424,11 +521,12 @@ Connect with DataGrip, DBeaver, or any ClickHouse-compatible client to `localhos
 | `isin` | String | | International Securities Identification Number |
 | `full_time_employees` | UInt32 | | Number of full-time employees |
 | `exchange` | LowCardinality(String) | | Exchange (NASDAQ, NYSE, B3) |
-| `market_cap` | UInt64 | | Market capitalization in USD |
 | `currency` | LowCardinality(String) | | Currency in which the stock is traded |
-| `dividend_yield` | Decimal(10,2) | | Annual dividend yield (%) |
 | `extraction_date` | Date | | Date of yfinance extraction |
 | `ingestion_timestamp` | DateTime | | Ingestion timestamp |
+| `start_date` | Date32 | Yes | Date when the record becomes active |
+| `end_date` | Nullable(Date32) | | Date when the record becomes inactive |
+| `is_active` | UInt8 | | Flag indicating whether the record is currently active (1 = active, 0 = inactive) |
  
 ### Fact Table: `stock_market.fact_prices`
 
@@ -449,8 +547,74 @@ Connect with DataGrip, DBeaver, or any ClickHouse-compatible client to `localhos
 > In ClickHouse, `MergeTree` does not have primary keys or foreign keys in the relational sense. The `ORDER BY` clause defines the **sorting key**,
 which also serves as the implicit sparse index used to skip data blocks during queries. Deduplication is handled upstream in the Silver layer before data reaches ClickHouse.
 
-> `fact_prices` is partitioned by `toYYYYMM(date)`, enabling partition
-pruning on date range filters and efficient monthly data management.
+> `fact_prices` is partitioned by `toYYYYMM(date)`, enabling partition pruning on date range filters and efficient monthly data management.
+
+### Analytical View: `stock_market.v_fact_prices_converted`
+
+This view normalizes and converts daily asset prices into both BRL and USD currencies. It joins the daily asset prices with the `USDBRL` exchange rate using an `ASOF LEFT JOIN` (which performs an automatic forward fill of exchange rates for weekends or local holidays). If no exchange rate exists prior to the trading date (e.g., dates before `2026-04-02`), it returns `NULL` for both the exchange rate and converted prices to prevent incorrect associations.
+
+| Column | Type | Description |
+|---|---|---|
+| `ticker` | LowCardinality(String) | Stock ticker symbol |
+| `currency` | LowCardinality(String) | Original currency of the ticker (BRL or USD) |
+| `date` | Date | Trading date |
+| `volume` | UInt64 | Total shares traded |
+| `usd_brl` | Nullable(Decimal(10,2)) | Applied USD to BRL exchange rate for the date |
+| `open_brl` | Nullable(Decimal(18,4)) | Opening price in BRL |
+| `high_brl` | Nullable(Decimal(18,4)) | Daily high price in BRL |
+| `low_brl` | Nullable(Decimal(18,4)) | Daily low price in BRL |
+| `close_brl` | Nullable(Decimal(18,4)) | Closing price in BRL |
+| `adj_close_brl` | Nullable(Decimal(18,4)) | Adjusted closing price in BRL |
+| `open_usd` | Nullable(Decimal(18,4)) | Opening price in USD |
+| `high_usd` | Nullable(Decimal(18,4)) | Daily high price in USD |
+| `low_usd` | Nullable(Decimal(18,4)) | Daily low price in USD |
+| `close_usd` | Nullable(Decimal(18,4)) | Closing price in USD |
+| `adj_close_usd` | Nullable(Decimal(18,4)) | Adjusted closing price in USD |
+
+### Fact Table: `stock_market.fact_company_metrics`
+
+| Column | Type | Sorting Key | Description |
+|---|---|---|---|
+| `extraction_date` | Date | Yes | Date of yfinance extraction |
+| `ticker` | LowCardinality(String) | Yes | Stock ticker symbol (e.g. AAPL, GOOGL) |
+| `dividend_yield` | Decimal(10,4) | | Annual dividend yield as a percentage |
+| `trailing_pe` | Decimal(10,2) | | Trailing price-to-earnings ratio (P/E) |
+| `peg_ratio` | Decimal(10,4) | | PEG Ratio |
+| `price_to_book` | Decimal(10,4) | | Price to Book Value (P/VP) |
+| `enterprise_to_ebitda` | Decimal(10,4) | | EV/EBITDA |
+| `enterprise_to_ebit` | Decimal(10,4) | | EV/EBIT |
+| `book_value` | Decimal(10,4) | | Book Value Per Share (VPA) |
+| `trailing_eps` | Decimal(10,4) | | Earnings Per Share (LPA) |
+| `price_to_sales` | Decimal(10,4) | | Price to Sales Ratio (P/SR) |
+| `operating_margins` | Decimal(10,4) | | Operating margin (EBIT margin) |
+| `asset_turnover` | Decimal(10,4) | | Asset turnover ratio |
+| `shares_outstanding` | UInt64 | | Total number of shares outstanding |
+| `market_cap` | UInt64 | | Market capitalization in original currency |
+| `ebitda` | Int64 | | Earnings before interest, taxes, depreciation, and amortization |
+| `total_debt` | UInt64 | | Total debt |
+| `total_cash` | UInt64 | | Total cash |
+| `debt_to_equity` | Decimal(10,4) | | Debt-to-equity ratio |
+| `roa` | Decimal(10,4) | | Return on assets |
+| `roe` | Decimal(10,4) | | Return on equity |
+| `current_ratio` | Decimal(10,4) | | Current ratio |
+| `gross_margins` | Decimal(10,4) | | Gross margins |
+| `ebitda_margins` | Decimal(10,4) | | EBITDA margins |
+| `profit_margins` | Decimal(10,4) | | Profit margins |
+| `net_income_to_common` | Int64 | | Net income to common shareholders |
+| `ingestion_timestamp` | DateTime | | Ingestion timestamp |
+
+### Analytical View: `stock_market.v_companies_performance`
+
+This view combines standard company metadata with the most recent valuation, efficiency, debt, and profitability metrics. It calculates advanced ratios on-the-fly, serving as a unified target for downstream BI/analytics dashboards.
+
+Key calculated columns:
+- `p_ebitda`: Price / EBITDA
+- `p_ebit`: Price / EBIT
+- `net_debt_equity`: Net Debt / Equity (incorporating book value and shares outstanding)
+- `net_debt_ebitda`: Net Debt / EBITDA
+- `net_debt_ebit`: Net Debt / EBIT
+- `equity_assets`: Equity / Assets
+- `liabilities_assets`: Liabilities / Assets
 
 ### Example queries
 
@@ -484,6 +648,34 @@ WHERE p.date >= today() - INTERVAL 90 DAY
 ORDER BY p.ticker, p.date;
 ```
 
+Filter high-performing companies with low debt from the analytical performance view:
+```sql
+SELECT
+    ticker,
+    short_name,
+    sector,
+    net_debt_ebitda,
+    roe,
+    dividend_yield
+FROM stock_market.v_companies_performance
+WHERE net_debt_ebitda < 2.0 AND roe > 0.15
+ORDER BY roe DESC;
+```
+
+Query assets with converted multi-currency prices (e.g., converting BRL assets to USD and vice versa):
+```sql
+SELECT
+    ticker,
+    date,
+    currency,
+    usd_brl,
+    close_brl,
+    close_usd
+FROM stock_market.v_fact_prices_converted
+WHERE ticker IN ('AAPL', 'ABEV3.SA') AND date >= today() - INTERVAL 7 DAY
+ORDER BY ticker, date;
+```
+
 ---
 
 ## CI/CD Pipeline
@@ -510,7 +702,7 @@ docker pull ghcr.io/eikesf/stock-market-pipeline:latest
 
 ## Roadmap & Future Improvements
 - [x] **Orchestration:** Implement Apache Airflow DAGs to replace `make` command execution.
-- [ ] **Data Quality:** Integrate Great Expectations or Soda for automated data quality assertions in the Silver layer.
+- [x] **Data Quality:** Integrate Great Expectations or Soda for automated data quality assertions in the Silver layer.
 - [ ] **Type Safety:** Achieve full Mypy strict compliance across the `src/` module.
 - [ ] **Observability:** Add structured logging with correlation IDs per pipeline run.
 

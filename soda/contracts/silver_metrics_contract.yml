@@ -1,0 +1,186 @@
+checks for silver_metrics:
+  # =========================================================================
+  # 1. Schema Validation (Structure and Column Types)
+  # =========================================================================
+  
+  # Ensure all required columns are present in the silver_metrics table
+  - schema:
+      name: "Check for required columns in silver metrics"
+      fail:
+        when required column missing:
+          - ticker
+          - market_cap
+          - dividend_yield
+          - trailing_pe
+          - peg_ratio
+          - price_to_book
+          - enterprise_to_ebitda
+          - enterprise_to_ebit
+          - book_value
+          - trailing_eps
+          - price_to_sales
+          - operating_margins
+          - asset_turnover
+          - shares_outstanding
+          - ebitda
+          - total_debt
+          - total_cash
+          - debt_to_equity
+          - roa
+          - roe
+          - current_ratio
+          - gross_margins
+          - ebitda_margins
+          - profit_margins
+          - net_income_to_common
+          - extraction_date
+          - ingestion_timestamp
+
+  # Validate that all column data types match target destination types
+  - schema:
+      name: "Check for correct column types in silver metrics"
+      fail:
+        when wrong column type:
+          ticker: string
+          market_cap: bigint
+          dividend_yield: decimal(10,4)
+          trailing_pe: decimal(10,4)
+          peg_ratio: decimal(10,4)
+          price_to_book: decimal(10,4)
+          enterprise_to_ebitda: decimal(10,4)
+          enterprise_to_ebit: decimal(10,4)
+          book_value: decimal(10,4)
+          trailing_eps: decimal(10,4)
+          price_to_sales: decimal(10,4)
+          operating_margins: decimal(10,4)
+          asset_turnover: decimal(10,4)
+          shares_outstanding: bigint
+          ebitda: bigint
+          total_debt: bigint
+          total_cash: bigint
+          debt_to_equity: decimal(10,4)
+          roa: decimal(10,4)
+          roe: decimal(10,4)
+          current_ratio: decimal(10,4)
+          gross_margins: decimal(10,4)
+          ebitda_margins: decimal(10,4)
+          profit_margins: decimal(10,4)
+          net_income_to_common: bigint
+          extraction_date: date
+          ingestion_timestamp: timestamp
+
+
+  # =========================================================================
+  # 2. Dataset Completeness & Uniqueness (Key constraints)
+  # =========================================================================
+
+  # Ensure the processing batch is not empty and monitor row count anomalies
+  - row_count > 0:
+      name: "Check that there are rows in the silver metrics table"
+
+  # Key identifiers (ticker, extraction_date, ingestion_timestamp) must never be null
+  - missing_count(ticker) = 0
+  - missing_count(extraction_date) = 0
+  - missing_count(ingestion_timestamp) = 0
+
+  # Ensure the composite primary key (ticker, extraction_date) is unique
+  - duplicate_count(ticker, extraction_date) = 0
+
+
+  # =========================================================================
+  # 3. Text Formatting & Cleanliness Constraints
+  # =========================================================================
+
+  # Tickers must follow standard uppercase naming convention (e.g. AAPL, PETR4.SA)
+  - failed rows:
+      name: "Check for invalid ticker format"
+      fail query: |
+        SELECT ticker
+        FROM silver_metrics
+        WHERE ticker NOT RLIKE '^[A-Z0-9\\.\\-]+$'
+
+  # =========================================================================
+  # 4. Logical Consistency & Temporal Rules
+  # =========================================================================
+
+  # Ensure extraction_date is not in the future
+  - failed rows:
+      name: "Extraction date cannot be in the future"
+      fail condition: extraction_date > CURRENT_DATE
+
+  # Ensure ingestion occurs on or after the actual extraction date
+  - failed rows:
+      name: "Ingestion timestamp must be after extraction date"
+      fail condition: ingestion_timestamp < extraction_date  
+
+  # Ensure ingestion_timestamp is not in the future
+  - failed rows:
+      name: "Ingestion timestamp cannot be in the future"
+      fail condition: ingestion_timestamp > CURRENT_TIMESTAMP
+
+  # =========================================================================
+  # 5. Value Range & Boundary Checks (Metrics specific)
+  # =========================================================================
+
+  # Non-negative metrics boundary checks
+  - min(market_cap) >= 0
+  - min(shares_outstanding) >= 0
+  - min(total_debt) >= 0
+  - min(total_cash) >= 0
+  - min(dividend_yield) >= 0
+  - min(price_to_sales) >= 0
+  - min(current_ratio) >= 0
+  - min(asset_turnover) >= 0
+
+  # Sanity checks for metrics that can be negative
+  - min(ebitda) > -1000000000000
+  - min(net_income_to_common) > -1000000000000
+  - min(book_value) > -10000
+  - min(trailing_eps) > -1000
+
+  # Margins and ratios boundary checks
+  - min(operating_margins) > -200.0
+  - max(operating_margins) <= 2.5
+  - min(ebitda_margins) > -200.0
+  - max(ebitda_margins) <= 2.5
+  - min(profit_margins) > -200.0
+  - max(profit_margins) <= 5.5
+  - min(gross_margins) > -200.0
+  - max(gross_margins) <= 2.5
+
+  # Return on assets (ROA) and return on equity (ROE) checks
+  - min(roa) > -50.0
+  - max(roa) <= 50.0
+  - min(roe) > -100.0
+  - max(roe) <= 100.0
+
+  # Valuation multiple sanity checks
+  - min(trailing_pe) >= 0
+  - min(peg_ratio) > -100.0
+  - min(price_to_book) > -1000.0
+  - min(enterprise_to_ebitda) > -5000.0
+  - max(enterprise_to_ebitda) < 5000.0
+  - min(enterprise_to_ebit) > -5000.0
+  - max(enterprise_to_ebit) < 5000.0
+  - min(debt_to_equity) > -1000.0
+  - max(debt_to_equity) < 50000.0
+
+  # =========================================================================
+  # 6. Quality Thresholds for Nullable Columns (Missing Percentages)
+  # =========================================================================
+
+  # Ensure critical metrics have high completeness (low missing percentages)
+  - missing_percent(market_cap) < 5:
+      name: "Ensure market_cap is populated for at least 95% of companies"
+  - missing_percent(shares_outstanding) < 10:
+      name: "Ensure shares_outstanding is populated for at least 90% of companies"
+  - missing_percent(ebitda) < 25:
+      name: "Ensure ebitda is populated for at least 75% of companies"
+  - missing_percent(total_cash) < 10:
+      name: "Ensure total_cash is populated for at least 90% of companies"
+  - missing_percent(operating_margins) < 25:
+      name: "Ensure operating_margins is populated for at least 75% of companies"
+  - missing_percent(profit_margins) < 25:
+      name: "Ensure profit_margins is populated for at least 75% of companies"
+  - missing_percent(trailing_pe) < 35:
+      name: "Ensure trailing_pe is populated for at least 65% of companies"

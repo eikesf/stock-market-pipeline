@@ -1,0 +1,163 @@
+checks for fact_prices:
+  # =========================================================================
+  # 1. Schema Validation (Structure and Column Types)
+  # =========================================================================
+
+  # Ensure all required columns are present in the fact_prices table
+  - schema:
+      name: "Check for required columns in fact_prices"
+      fail:
+        when required column missing:
+          - date
+          - ticker
+          - open
+          - high
+          - low
+          - close
+          - adj_close
+          - volume
+          - dividends
+          - stock_splits
+          - ingestion_timestamp
+
+  # Validate that column types match the ClickHouse destination mapping
+  - schema:
+      name: "Check for correct column types in fact_prices"
+      fail:
+        when wrong column type:
+          date: Date
+          ticker: LowCardinality(String)
+          open: Decimal(10, 2)
+          high: Decimal(10, 2)
+          low: Decimal(10, 2)
+          close: Decimal(10, 2)
+          adj_close: Decimal(10, 2)
+          volume: UInt64
+          dividends: Decimal(10, 2)
+          stock_splits: Decimal(10, 4)
+          ingestion_timestamp: DateTime
+
+  # =========================================================================
+  # 2. Dataset Completeness & Uniqueness (Key constraints)
+  # =========================================================================
+
+  # Ensure the prices fact table is populated
+  - row_count > 0:
+      name: "Check that there are rows in the fact_prices table"
+
+  # Primary identifiers and price fields must never be null
+  - missing_count(ticker) = 0
+  - missing_count(date) = 0
+  - missing_count(open) = 0
+  - missing_count(high) = 0
+  - missing_count(low) = 0
+  - missing_count(close) = 0
+  - missing_count(adj_close) = 0
+  - missing_count(volume) = 0
+  - missing_count(dividends) = 0
+  - missing_count(stock_splits) = 0
+  - missing_count(ingestion_timestamp) = 0
+  
+  # Ensure that the composite primary key (ticker, date) is unique
+  - duplicate_count(ticker, date) = 0:
+      name: "Check that the composite key (ticker, date) is unique"
+
+  # =========================================================================
+  # 3. Text Formatting & Cleanliness Constraints
+  # =========================================================================
+
+  # Ticker formatting check (uppercase alphanumeric, dots, and hyphens using match())
+  - failed rows:
+      name: "Check that the ticker format is valid"
+      fail query: |
+        SELECT *
+        FROM fact_prices
+        WHERE NOT match(ticker, '^[A-Z0-9\\.\\-]+$')
+
+  # =========================================================================
+  # 4. Range and Boundary Checks (Logical consistency of prices)
+  # =========================================================================
+
+  # Price fields and volume must be strictly positive (greater than zero)
+  - failed rows:
+      name: "Check that price fields and volume are strictly positive (greater than zero)"
+      fail query: |
+        SELECT *
+        FROM fact_prices
+        WHERE open < 0 OR high < 0 OR low < 0 OR close < 0 OR volume < 0 OR adj_close < 0
+           OR (volume > 0 AND (open = 0 OR high = 0 OR low = 0 OR close = 0 OR adj_close = 0))
+
+  # Dividends and stock splits must be non-negative (greater than or equal to zero)
+  - failed rows:
+      name: "Check that dividends and stock splits are non-negative"
+      fail query: |
+        SELECT *
+        FROM fact_prices
+        WHERE dividends < 0 OR stock_splits < 0
+
+  # Logical price boundaries (high must be the highest, low must be the lowest for the day)
+  - failed rows:
+      name: "Check that high is always greater than or equal to low, open, and close"
+      fail query: |
+        SELECT *
+        FROM fact_prices
+        WHERE volume > 0 AND open > 0 AND (high < low OR high < open OR high < close)
+
+  - failed rows:
+      name: "Check that low is always less than or equal to open and close"
+      fail query: |
+        SELECT *
+        FROM fact_prices
+        WHERE volume > 0 AND open > 0 AND (low > open OR low > close)
+
+  # =========================================================================
+  # 5. Temporal Consistency & Audit Rules
+  # =========================================================================
+
+  # Trading date cannot be in the future
+  - failed rows:
+      name: "Check that the trading date is not in the future"
+      fail query: |
+        SELECT *
+        FROM fact_prices
+        WHERE date > today() + 1
+
+  # Ingestion timestamp cannot be in the future and must occur after or on the trading date
+  - failed rows:
+      name: "Check that the ingestion timestamp is not in the future and must occur after or on the trading date"
+      fail query: |
+        SELECT *
+        FROM fact_prices
+        WHERE ingestion_timestamp > now() OR ingestion_timestamp < date - INTERVAL 1 DAY
+
+  # =========================================================================
+  # 6. Advanced Governance & SLA Rules
+  # =========================================================================
+
+  # Referential Integrity: Ensure all tickers in fact_prices exist in dim_companies (excluding USDBRL currency pair)
+  - failed rows:
+      name: "Ensure all tickers in fact_prices exist in dim_companies"
+      fail query: |
+        SELECT DISTINCT ticker
+        FROM fact_prices
+        WHERE ticker != 'USDBRL' 
+          AND ticker NOT IN (SELECT DISTINCT ticker FROM dim_companies)
+      warn: when > 0
+
+  # Outlier Detection: Check for unrealistic intraday price variations (e.g. > 5x increase or < 0.2x drop)
+  - failed rows:
+      name: "Check for unrealistic intraday price variations"
+      fail query: |
+        SELECT *
+        FROM fact_prices
+        WHERE volume > 0 AND open > 0 
+          AND (close / open > 5.0 OR open / close > 5.0)
+      warn: when > 0
+
+  # Freshness Check: Ensure the database has recent price records (SLA)
+  - failed rows:
+      name: "Check that the most recent price record is not older than 4 days"
+      fail query: |
+        SELECT max(date)
+        FROM fact_prices
+        HAVING max(date) < today() - INTERVAL 4 DAY

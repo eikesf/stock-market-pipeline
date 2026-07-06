@@ -29,3 +29,26 @@ def test_dag_standards():
         assert dag.catchup is False, f"DAG {dag_id} needs to have catchup set to False."
         assert dag.schedule is not None, f"DAG {dag_id} needs to have a schedule set."
         assert dag.start_date is not None, f"DAG {dag_id} needs to have a start_date set."
+
+
+def test_all_contracts_integrated_in_dags():
+    """Verify that every YAML contract in soda/contracts is referenced and tested in the DAG files."""
+    from pathlib import Path
+
+    # Find all contracts
+    contracts_dir = Path("soda/contracts")
+    contract_files = [p.name for p in contracts_dir.glob("*.yml")]
+    assert len(contract_files) > 0, "No contract files found in soda/contracts"
+
+    # Read all DAG file contents
+    dags_dir = Path("airflow/dags")
+    dag_contents = ""
+    for df in dags_dir.glob("*.py"):
+        with open(df, encoding="utf-8") as f:
+            dag_contents += f.read()
+
+    # Assert each contract is referenced in at least one DAG
+    for contract in contract_files:
+        assert contract in dag_contents, (
+            f"Contract file '{contract}' is defined in soda/contracts but not referenced/tested in any DAG!"
+        )

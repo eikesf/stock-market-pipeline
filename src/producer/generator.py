@@ -5,13 +5,22 @@ from datetime import date, timedelta
 import pandas as pd
 import yfinance as yf
 
-from src.producer.config import LANDING_PRICES_DIR
+from src.producer.config import ARCHIVE_PRICES_DIR, LANDING_PRICES_DIR
 from src.producer.tickers import get_all_tickers
 from src.utils.logger import logger
 
 
 def _reshape_and_clean_prices(data: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
-    """Helper to reshape, clean, and cast raw yfinance DataFrame to target schema."""
+    """Reshape, clean, and cast raw yfinance DataFrame to target schema.
+
+    Args:
+        data: The raw DataFrame downloaded from yfinance.
+        tickers: List of stock tickers.
+
+    Returns:
+        A cleaned, reshaped DataFrame containing only the latest trading day per
+        ticker, with columns matching the target database schema.
+    """
     if isinstance(data.columns, pd.MultiIndex):
         logger.debug("MultiIndex columns detected - reshaping with stack()")
         tickers_long = data.stack(level=1, future_stack=True).reset_index()
@@ -47,7 +56,30 @@ def _reshape_and_clean_prices(data: pd.DataFrame, tickers: list[str]) -> pd.Data
 
 
 def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
-    """Extract daily stock prices from yFinance and persist to the Landing zone."""
+    """Extract daily stock prices from yFinance and persist to the Landing zone.
+
+    Downloads price data for the specified execution date, cleans it, and
+    saves it as a compressed Parquet file in the Landing zone.
+
+    Args:
+        exec_date: Execution date in YYYY-MM-DD format.
+        tickers: Optional list of tickers to download. If not provided,
+            downloads all configured tickers.
+
+    Raises:
+        SystemExit: If the download fails, no tickers are found, or saving the
+            parquet file fails.
+    """
+    # Check if a file for the execution date already exists in landing or archive directory
+    target_path = f"tickers_{exec_date}.parquet"
+    in_landing = (LANDING_PRICES_DIR / target_path).exists()
+    in_archive = (ARCHIVE_PRICES_DIR / target_path).exists()
+
+    if in_landing or in_archive:
+        location = "landing" if in_landing else "archive"
+        logger.info(f"Prices file for {exec_date} already exists in {location}. Skipping download.")
+        return
+
     # Convert exec_date to a date object to calculate the next day
     exec_date_obj = date.fromisoformat(exec_date)
 
@@ -62,9 +94,19 @@ def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
         logger.critical("No tickers found to download. Aborting pipeline.")
         sys.exit(1)
 
+    if "USDBRL=X" not in tickers:
+        tickers.append("USDBRL=X")
+
     try:
         logger.info(f"Downloading data for {len(tickers)} tickers...")
-        data = yf.download(tickers=tickers, start=exec_date, end=end_date.isoformat(), actions=True, auto_adjust=False)
+        data = yf.download(
+            tickers=tickers,
+            start=exec_date,
+            end=end_date.isoformat(),
+            actions=True,
+            auto_adjust=False,
+            progress=False,
+        )
     except Exception:
         logger.opt(exception=True).critical("Failed to download from Yahoo Finance. Aborting pipeline.")
         sys.exit(1)
@@ -99,7 +141,11 @@ def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
 
 
 def main() -> None:
-    """Main entry point to execute the generator CLI."""
+    """Main entry point to execute the generator CLI.
+
+    Parses CLI arguments for the target date, validates the date format,
+    and runs the generator.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--date", type=str, default=date.today().isoformat(), help="Date to download data (format: YYYY-MM-DD)"

@@ -1,0 +1,165 @@
+checks for silver_metadata:
+  # =========================================================================
+  # 1. Schema Validation (Structure and Column Types)
+  # =========================================================================
+
+  # Ensure all critical database columns are present in the table
+  - schema:
+      name: "Check for required columns in silver metadata"
+      fail:
+        when required column missing:
+          - ticker
+          - short_name
+          - sector
+          - industry
+          - country
+          - isin
+          - full_time_employees
+          - exchange
+          - currency
+          - extraction_date
+          - ingestion_timestamp
+          - start_date
+          - end_date
+          - is_active
+
+  # Validate that columns have correct data types matching the Spark/ClickHouse destination
+  - schema:
+      name: "Check for correct column types in silver metadata"
+      fail:
+        when wrong column type:
+          ticker: string
+          short_name: string
+          sector: string
+          industry: string
+          country: string
+          isin: string
+          full_time_employees: int
+          exchange: string
+          currency: string
+          extraction_date: date
+          ingestion_timestamp: timestamp
+          start_date: date
+          end_date: date
+          is_active: int
+
+  # =========================================================================
+  # 2. Dataset Completeness & Uniqueness (Key constraints)
+  # =========================================================================
+
+  # Ensure the table is not empty and monitor unexpected drops in volume
+  - row_count > 0:
+      name: "Monitor table row count and ensure it is populated"
+
+  # Key identifiers must never be null (omits full_time_employees and end_date as they are nullable)
+  - missing_count(ticker) = 0
+  - missing_count(short_name) = 0
+  - missing_count(sector) = 0
+  - missing_count(industry) = 0
+  - missing_count(exchange) = 0
+  - missing_count(currency) = 0
+  - missing_count(extraction_date) = 0
+  - missing_count(ingestion_timestamp) = 0
+  - missing_count(start_date) = 0
+  - missing_count(is_active) = 0
+
+  # Ensure the composite primary key (ticker, extraction_date) is unique
+  - duplicate_count(ticker, extraction_date) = 0
+
+  # =========================================================================
+  # 3. Text Formatting & Cleanliness Constraints
+  # =========================================================================
+
+  # Tickers must follow standard uppercase naming convention (e.g. AAPL, PETR4.SA)
+  - failed rows:
+      name: "Check for invalid ticker format"
+      fail query: |
+        SELECT ticker
+        FROM silver_metadata
+        WHERE ticker NOT RLIKE '^[A-Z0-9\\.\\-]+$'
+
+  # Ensure the exchange column contains values from the accepted list
+  - invalid_count(exchange) = 0:
+      valid values: ["B3", "BTS", "NASDAQ", "NYSE"]
+
+  # Ensure the currency column has values from the accepted list (USD, BRL)
+  - invalid_count(currency) = 0:
+      valid values: ["USD", "BRL"]
+
+  # Ensure the is_active column has values of the boolean type representation (1 or 0)
+  - invalid_count(is_active) = 0:
+      valid values: [1, 0]
+
+  # Ensure the ISIN is formatted correctly (12 alphanumeric characters, starting with country code)
+  - failed rows:
+      name: "Check for invalid ISIN format"
+      fail query: |
+        SELECT isin
+        FROM silver_metadata
+        WHERE isin NOT RLIKE '^(N/A|[A-Z]{2}[A-Z0-9]{9}[0-9])$'
+
+  # =========================================================================
+  # 4. Value Range & Boundary checks
+  # =========================================================================
+
+  # Employee count must never be negative
+  - min(full_time_employees) >= 0
+
+  # Ensure that missing/null employee records do not exceed 15% (detects potential API payload changes)
+  - missing_percent(full_time_employees) < 15:
+      name: "Ensure missing employee counts do not exceed 15%"
+
+  # =========================================================================
+  # 5. SCD Type 2 Logical Constraints
+  # =========================================================================
+
+  # Active records (is_active = 1) must have end_date set as NULL
+  - failed rows:
+      name: "Active records must not have end_date set"
+      fail condition: is_active = 1 AND end_date IS NOT NULL
+
+  # Inactive records (is_active = 0) must have a valid end_date populated
+  - failed rows:
+      name: "Inactive records must have an end_date populated"
+      fail condition: is_active = 0 AND end_date IS NULL
+
+  # Check that expiration dates are logical
+  - failed rows:
+      name: "Expiration dates (end_date) must be after or equal to start_date"
+      fail condition: end_date < start_date
+
+  # Ensure at most one record is active (is_active = 1) per ticker at any time
+  - failed rows:
+      name: "At most one active record is allowed per ticker"
+      fail query: |
+        SELECT ticker, COUNT(*)
+        FROM silver_metadata
+        WHERE is_active = 1
+        GROUP BY ticker
+        HAVING COUNT(*) > 1
+
+  # Ensure extraction_date is not in the future
+  - failed rows:
+      name: "Extraction date cannot be in the future"
+      fail condition: extraction_date > CURRENT_DATE
+
+  # Ensure start_date is not in the future
+  - failed rows:
+      name: "Start date cannot be in the future"
+      fail condition: start_date > CURRENT_DATE
+
+  # Ensure ingestion occurs on or after the actual extraction date
+  - failed rows:
+      name: "Check that ingestion_timestamp is on or after extraction_date"
+      fail condition: ingestion_timestamp < extraction_date
+
+  # Ensure active periods do not overlap for the same ticker (SCD Type 2 integrity)
+  - failed rows:
+      name: "SCD Type 2 active periods must not overlap"
+      fail query: |
+        SELECT a.ticker, a.start_date, b.start_date
+        FROM silver_metadata a
+        JOIN silver_metadata b
+          ON a.ticker = b.ticker
+          AND a.start_date < b.start_date
+          AND (a.end_date IS NULL OR a.end_date > b.start_date)

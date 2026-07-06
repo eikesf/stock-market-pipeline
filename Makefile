@@ -4,7 +4,8 @@ export DOCKER_CLI_HINTS=false
 
 .PHONY: up down build shell airflow_up airflow_down lint lint_fix format test test_cov run run_prices run_metadata _prices_flow _metadata_flow run_landing_prices run_landing_metadata \
 		run_bronze_prices run_bronze_metadata run_silver_prices \
-		run_silver_metadata run_gold run_gold_prices run_gold_metadata run_maintenance clean clean_data reset
+		run_silver_metadata run_gold run_gold_prices run_gold_metadata run_maintenance clean clean_data reset \
+		soda_silver soda_gold soda_all
 
 # --- Infrastructure ---
 up: ## Start the Docker environment
@@ -40,6 +41,14 @@ test: ## Run pytest suite inside the container
 
 test_cov: ## Run pytest suite with coverage inside the container
 	docker exec python_finance pytest --cov=src --cov-report=term-missing --cov-fail-under=80
+
+soda_silver: ## Run Soda Core Silver quality contracts (local Spark Delta)
+	docker exec python_finance python soda/run_silver_scans.py
+
+soda_gold: ## Run Soda Core Gold quality contracts (ClickHouse)
+	docker exec python_finance sh -c "soda scan -d clickhouse -c /app/soda/configuration.yml /app/soda/contracts/gold_*.yml" || [ $$? -eq 1 ]
+
+soda_all: soda_silver soda_gold ## Run all Soda Core quality contracts (Silver & Gold)
 
 # --- Environment Management ---
 clean: ## Stop containers and remove docker volumes (Clickhouse data)

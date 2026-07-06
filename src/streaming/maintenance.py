@@ -4,7 +4,13 @@ from pathlib import Path
 
 from delta.tables import DeltaTable
 
-from src.producer.config import BRONZE_METADATA_DIR, BRONZE_PRICES_DIR, SILVER_METADATA_DIR, SILVER_PRICES_DIR
+from src.producer.config import (
+    BRONZE_METADATA_DIR,
+    BRONZE_PRICES_DIR,
+    SILVER_METADATA_DIR,
+    SILVER_METRICS_DIR,
+    SILVER_PRICES_DIR,
+)
 from src.streaming.spark_session import create_spark_session
 from src.utils.logger import logger
 
@@ -14,7 +20,7 @@ def run_maintenance(retention_hours: float) -> None:
 
     This function initializes a Spark session, disables the retention duration safety check
     to allow custom windows, and executes maintenance on Bronze and Silver Delta tables for
-    both prices and metadata. For each active table, it performs:
+    prices, metadata, and metrics. For each active table, it performs:
       1. Compaction (OPTIMIZE): Merges small Parquet files to improve read query performance.
       2. Vacuuming (VACUUM): Removes unreferenced data files older than the retention threshold.
 
@@ -33,6 +39,7 @@ def run_maintenance(retention_hours: float) -> None:
             BRONZE_METADATA_DIR,
             SILVER_PRICES_DIR,
             SILVER_METADATA_DIR,
+            SILVER_METRICS_DIR,
         ]
 
         for table_path in paths_to_manage:
@@ -56,7 +63,10 @@ def run_maintenance(retention_hours: float) -> None:
 
 
 def main() -> None:
-    """CLI entrypoint for running Delta table maintenance."""
+    """CLI entrypoint for running Delta table maintenance.
+
+    Parses CLI arguments for retention hours, and runs Delta vacuum and optimize.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--retention",

@@ -19,7 +19,17 @@ _HEADERS = {
 def _fetch_table(
     url: str, table_id: str | None = None, match: str | None = None, ticker_col: str = "Symbol"
 ) -> list[str]:
-    """Fetch an HTML page with browser headers and extract a table by id or matching text."""
+    """Fetch an HTML page and extract a table.
+
+    Args:
+        url: The URL to fetch HTML from.
+        table_id: Optional HTML id of the table.
+        match: Optional string/regex pattern to locate the correct table.
+        ticker_col: The name of the column containing tickers. Defaults to "Symbol".
+
+    Returns:
+        A list of ticker strings extracted from the table.
+    """
     html = requests.get(url, headers=_HEADERS, timeout=15).text
 
     kwargs: dict[str, str | dict[str, str]] = {}
@@ -38,7 +48,15 @@ def _fetch_table(
 
 @functools.cache
 def get_all_tickers() -> dict[str, list[str]]:
-    """Fetch B3, NASDAQ, and NYSE tickers dynamically with fallbacks and cache the result."""
+    """Fetch B3, NASDAQ, and NYSE tickers dynamically.
+
+    Retrieves ticker lists from Wikipedia and Brapi API with caching enabled
+    and safe hardcoded fallbacks in case of network/API failures.
+
+    Returns:
+        A dictionary mapping exchange names ('NASDAQ', 'NYSE', 'B3') to their
+        respective list of stock tickers.
+    """
     logger.info("Fetching tickers list from external sources...")
 
     # ── NASDAQ-100 ────────────────────────────────────────────────────────────────
@@ -89,7 +107,7 @@ def get_all_tickers() -> dict[str, list[str]]:
 
 
 def main() -> None:
-    """Main entry point to list all fetched tickers."""
+    """CLI entrypoint to display and verify fetched tickers for each exchange."""
     for exchange, tickers in get_all_tickers().items():
         logger.info(f"{exchange}: {len(tickers)} tickers — {tickers[:5]}...")
 
