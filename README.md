@@ -165,6 +165,7 @@ graph LR
     class G_FACT,G_DIM,G_MET,G_PERF,G_CONV olapTable
 ```
 
+
 **Pipeline A - Daily Stock Prices (Fact):** extracts daily OHLCV time-series from `yfinance`, stores raw Parquet files in the Landing zone, ingests into Delta Lake (Bronze), deduplicates via PySpark window functions (Silver), and loads into ClickHouse as `fact_prices`.
 
 **Pipeline B - Weekly & Monthly Company Data Pipelines (Dimension, Fact, and View):** extracts company details and financial fundamentals (such as debt, cash, EBITDA, valuation metrics) from `yfinance`. It stores Parquet extractions in Landing, loads them into Delta Bronze, and then splits into two parallel Silver & Gold paths managed by separate DAGs:
