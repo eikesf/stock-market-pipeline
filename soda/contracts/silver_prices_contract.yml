@@ -104,10 +104,11 @@ checks for silver_prices:
         WHERE volume > 0 AND open > 0 AND (low > open OR low > close)
       warn: when > 0
 
-  # Prevent future data leakage
+  # Prevent future data leakage (allowing 1 day timezone buffer for global markets/Forex)
   - failed rows:
       name: "Check that date is not in the future"
-      fail condition: date > CURRENT_DATE
+      fail condition: date > date_add(CURRENT_DATE, 1)
+
 
   # Ingestion date must be on or after the actual trading session date (allowing 1 day timezone buffer)
   - failed rows:
