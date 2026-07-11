@@ -110,6 +110,9 @@ max-complexity = 10
     "PLC0415", # import should be at the top-level (to avoid importing PySpark/heavy dependencies on DAG parse time)
     "ANN401",  # dynamically typed expressions (typing.Any) (allowed for context dicts)
 ]
+"src/streaming/gold.py" = [
+    "PLC0415", # inline imports are required for PySpark executor tasks serialization
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

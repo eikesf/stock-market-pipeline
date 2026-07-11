@@ -17,6 +17,26 @@ from pyspark.sql.types import (
 
 from src.streaming.gold import main
 
+
+@pytest.fixture(autouse=True)
+def mock_spark_foreach_partition():
+    """Mock PySpark RDD.foreachPartition to run in-process on the driver.
+
+    This is necessary because unittest mocks on the driver do not propagate
+    to Spark executor subprocesses.
+    """
+    from pyspark.rdd import RDD
+
+    original_foreach = RDD.foreachPartition
+
+    def dummy_foreach(self, f):
+        f(iter(self.collect()))
+
+    RDD.foreachPartition = dummy_foreach
+    yield
+    RDD.foreachPartition = original_foreach
+
+
 METADATA_SCHEMA = StructType(
     [
         StructField("ticker", StringType(), True),
@@ -415,11 +435,7 @@ def test_gold_empty_silver_data(spark_session, tmp_path):
     finally:
         logger.remove(sink_id)
 
-    assert mock_client.insert_df.call_count == 1
-    first_call_args = mock_client.insert_df.call_args_list[0][0]
-
-    assert first_call_args[0] == "stock_market.dim_companies_staging"
-    assert first_call_args[1].empty
+    assert mock_client.insert_df.call_count == 0
 
     log_content = "".join(captured_logs)
     assert "Starting Gold layer processing" in log_content

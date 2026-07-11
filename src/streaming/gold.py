@@ -1,20 +1,46 @@
 import argparse
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import date
-from typing import TYPE_CHECKING, cast
 
 from clickhouse_connect.driver.client import Client
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, date_format
 
 from src.producer.config import SILVER_METADATA_DIR, SILVER_METRICS_DIR, SILVER_PRICES_DIR
 from src.streaming.spark_session import create_spark_session
 from src.streaming.utils import get_clickhouse_client, read_delta_table
 from src.utils.logger import logger
 
-if TYPE_CHECKING:
-    import pandas as pd
+
+def make_write_partition(table_name: str, columns: list[str]) -> Callable[[Iterator], None]:
+    """Create a partition writer function for Spark executors.
+
+    Args:
+        table_name: The destination table name in ClickHouse.
+        columns: The column names in the Spark DataFrame.
+
+    Returns:
+        A callable that can be passed to RDD.foreachPartition().
+    """
+
+    def write_partition(partition_iterator: Iterator) -> None:
+        import pandas as pd
+
+        from src.streaming.gold import get_clickhouse_client
+
+        rows = list(partition_iterator)
+        if not rows:
+            return
+
+        df_partition = pd.DataFrame([row.asDict() for row in rows], columns=columns)
+        clickhouse_client = get_clickhouse_client()
+        try:
+            clickhouse_client.insert_df(table_name, df_partition)
+        finally:
+            clickhouse_client.close()
+
+    return write_partition
 
 
 def _load_prices_to_gold(spark: SparkSession, client: Client) -> None:
@@ -57,23 +83,22 @@ def _load_prices_to_gold(spark: SparkSession, client: Client) -> None:
         & (col("low") <= col("close"))
     )
 
-    df_prices_pd = cast("pd.DataFrame", df_prices.toPandas())
+    # Extract unique partition IDs in 'YYYYMM' format based on dates
+    partitions_df = df_prices.select(date_format(col("date"), "yyyyMM").alias("partition")).distinct()
+    affected_partitions = [row["partition"] for row in partitions_df.collect() if row["partition"] is not None]
 
-    if df_prices_pd.empty:
+    if not affected_partitions:
         logger.warning("Silver prices DataFrame is empty. Nothing to load to Gold.")
         return
-
-    # Extract unique partition IDs in 'YYYYMM' format based on dates
-    dates = df_prices_pd["date"].astype(str)
-    affected_partitions = dates.apply(lambda x: x.replace("-", "")[:6]).unique().tolist()
 
     for partition in affected_partitions:
         logger.info(f"Dropping partition '{partition}' in ClickHouse fact_prices table...")
         client.command(f"ALTER TABLE stock_market.fact_prices DROP PARTITION '{partition}'")
 
     logger.info("Inserting new/updated prices into ClickHouse fact_prices...")
-    client.insert_df("stock_market.fact_prices", df_prices_pd)
-    logger.success("Silver prices loaded to gold successfully.")
+
+    df_prices.rdd.foreachPartition(make_write_partition("stock_market.fact_prices", df_prices.columns))
+    logger.success("Silver prices loaded to Gold successfully.")
 
 
 def _load_metadata_to_gold(spark: SparkSession, client: Client) -> None:
@@ -101,11 +126,12 @@ def _load_metadata_to_gold(spark: SparkSession, client: Client) -> None:
         col("end_date"),
         col("is_active"),
     )
-    df_metadata_pd = cast("pd.DataFrame", df_metadata.toPandas())
 
     client.command("CREATE TABLE IF NOT EXISTS stock_market.dim_companies_staging AS stock_market.dim_companies")
     client.command("TRUNCATE TABLE stock_market.dim_companies_staging")
-    client.insert_df("stock_market.dim_companies_staging", df_metadata_pd)
+
+    df_metadata.rdd.foreachPartition(make_write_partition("stock_market.dim_companies_staging", df_metadata.columns))
+
     client.command("EXCHANGE TABLES stock_market.dim_companies AND stock_market.dim_companies_staging")
     client.command("DROP TABLE IF EXISTS stock_market.dim_companies_staging")
     logger.success("Silver Metadata loaded to Gold successfully.")
@@ -154,22 +180,21 @@ def _load_metrics_to_gold(spark: SparkSession, client: Client) -> None:
         col("net_income_to_common"),
         col("ingestion_timestamp"),
     )
-    df_metrics_pd = cast("pd.DataFrame", df_metrics.toPandas())
 
-    if df_metrics_pd.empty:
-        logger.warning("Silver metrics DataFrame is empty. Nothing to load to Gold.")
+    partitions_df = df_metrics.select(date_format(col("extraction_date"), "yyyyMM").alias("partition")).distinct()
+    affected_partitions = [row["partition"] for row in partitions_df.collect() if row["partition"] is not None]
+
+    if not affected_partitions:
+        logger.warning("No partitions found in Silver metrics DataFrame. Nothing to load to Gold.")
         return
-
-    # Extract unique partition IDs in 'YYYYMM' format based on extraction_date
-    dates = df_metrics_pd["extraction_date"].astype(str)
-    affected_partitions = dates.apply(lambda x: x.replace("-", "")[:6]).unique().tolist()
 
     for partition in affected_partitions:
         logger.info(f"Dropping partition '{partition}' in ClickHouse fact_company_metrics table...")
         client.command(f"ALTER TABLE stock_market.fact_company_metrics DROP PARTITION '{partition}'")
 
     logger.info("Inserting new/updated metrics into ClickHouse fact_company_metrics...")
-    client.insert_df("stock_market.fact_company_metrics", df_metrics_pd)
+
+    df_metrics.rdd.foreachPartition(make_write_partition("stock_market.fact_company_metrics", df_metrics.columns))
     logger.success("Silver metrics loaded to gold successfully.")
 
 

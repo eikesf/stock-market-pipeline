@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
@@ -22,11 +23,14 @@ def create_spark_session() -> SparkSession:
     logger.info("Initializing Spark Session...")
     spark = None
     try:
+        root_dir = str(Path(__file__).resolve().parent.parent.parent)
+
         builder = (
             SparkSession.builder.appName("Stock Market Pipeline")
             .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
             .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
             .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.RawLocalFileSystem")
+            .config("spark.executorEnv.PYTHONPATH", root_dir)
         )
 
         # Checking stderr stream for pytest/notebooks compatibility.
