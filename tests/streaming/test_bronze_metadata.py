@@ -37,7 +37,7 @@ def test_bronze_metadata_success_path(spark_session, tmp_path):
         }
     )
 
-    df_dummy.to_parquet(landing_metadata_dir / "metadata_2026-05-28.parquet", index=False)
+    df_dummy.to_parquet(landing_metadata_dir / "ticker_metadata_2026-05-28.parquet", index=False)
 
     with (
         patch("src.streaming.bronze_metadata.LANDING_METADATA_DIR", landing_metadata_dir),
@@ -115,7 +115,7 @@ def test_bronze_metadata_processing_failure(spark_session, tmp_path):
         }
     )
 
-    df_dummy.to_parquet(landing_metadata_dir / "metadata_2026-05-28.parquet", index=False)
+    df_dummy.to_parquet(landing_metadata_dir / "ticker_metadata_2026-05-28.parquet", index=False)
 
     # Capture logs to assert expected error messages on pipeline failure
     captured_logs = []
@@ -177,7 +177,7 @@ def test_bronze_metadata_date_from_arguments(spark_session, tmp_path):
         }
     )
 
-    df_dummy.to_parquet(landing_metadata_dir / "metadata_2026-05-28.parquet", index=False)
+    df_dummy.to_parquet(landing_metadata_dir / "ticker_metadata_2026-05-28.parquet", index=False)
 
     with (
         patch("src.streaming.bronze_metadata.LANDING_METADATA_DIR", landing_metadata_dir),
