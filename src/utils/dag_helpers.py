@@ -1,10 +1,13 @@
 import logging
 import os
+from typing import Any
+
+ClickHouseHook: Any
 
 try:
     from airflow.providers.clickhousedb.hooks.clickhouse import ClickHouseHook
 except ImportError:
-    ClickHouseHook = None  # type: ignore[assignment, misc]
+    ClickHouseHook = None
 
 
 def setup_clickhouse_env() -> None:
