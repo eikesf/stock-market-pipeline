@@ -1,10 +1,10 @@
 import argparse
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable
 from datetime import date
 
 from clickhouse_connect.driver.client import Client
-from pyspark.sql import SparkSession
+from pyspark.sql import Row, SparkSession
 from pyspark.sql.functions import col, date_format
 
 from src.producer.config import SILVER_METADATA_DIR, SILVER_METRICS_DIR, SILVER_PRICES_DIR
@@ -13,7 +13,7 @@ from src.streaming.utils import get_clickhouse_client, read_delta_table
 from src.utils.logger import logger
 
 
-def make_write_partition(table_name: str, columns: list[str]) -> Callable[[Iterator], None]:
+def make_write_partition(table_name: str, columns: list[str]) -> Callable[[Iterable[Row]], None]:
     """Create a partition writer function for Spark executors.
 
     Args:
@@ -24,7 +24,7 @@ def make_write_partition(table_name: str, columns: list[str]) -> Callable[[Itera
         A callable that can be passed to RDD.foreachPartition().
     """
 
-    def write_partition(partition_iterator: Iterator) -> None:
+    def write_partition(partition_iterator: Iterable[Row]) -> None:
         import pandas as pd
 
         from src.streaming.gold import get_clickhouse_client
