@@ -23,8 +23,6 @@ def run_bronze_metadata(exec_date: str) -> None:
         landing_dir=LANDING_METADATA_DIR,
         archive_dir=ARCHIVE_METADATA_DIR,
         bronze_dir=BRONZE_METADATA_DIR,
-        file_pattern=f"*metadata_{exec_date}.parquet",
-        archive_name_format=f"ticker_metadata_{exec_date}.parquet",
         domain_name="Metadata",
     )
 

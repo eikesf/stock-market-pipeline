@@ -23,8 +23,6 @@ def run_bronze(exec_date: str) -> None:
         landing_dir=LANDING_PRICES_DIR,
         archive_dir=ARCHIVE_PRICES_DIR,
         bronze_dir=BRONZE_PRICES_DIR,
-        file_pattern=f"tickers_{exec_date}.parquet",
-        archive_name_format=f"tickers_{exec_date}.parquet",
         domain_name="Prices",
     )
 

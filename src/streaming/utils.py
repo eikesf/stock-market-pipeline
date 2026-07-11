@@ -103,13 +103,18 @@ def infer_execution_date(landing_dir: Path) -> str:
     return exec_date
 
 
-def ingest_landing_to_bronze(  # noqa: PLR0913
+def resolve_bronze_file_patterns(exec_date: str, domain_name: str) -> tuple[str, str]:
+    """Resolve file glob pattern and archive name format based on domain."""
+    if domain_name.lower() == "prices":
+        return f"tickers_{exec_date}.parquet", f"tickers_{exec_date}.parquet"
+    return f"*metadata_{exec_date}.parquet", f"ticker_metadata_{exec_date}.parquet"
+
+
+def ingest_landing_to_bronze(
     exec_date: str,
     landing_dir: Path,
     archive_dir: Path,
     bronze_dir: Path,
-    file_pattern: str,
-    archive_name_format: str,
     domain_name: str,
 ) -> None:
     """Ingest files from Landing Zone to Bronze Layer using Spark.
@@ -123,10 +128,10 @@ def ingest_landing_to_bronze(  # noqa: PLR0913
         landing_dir: Path to the Landing zone directory.
         archive_dir: Path to the Archive directory.
         bronze_dir: Path to the Bronze layer Delta table.
-        file_pattern: Glob pattern to find the file in Landing (e.g. '*metadata_2026-07-10.parquet').
-        archive_name_format: Fallback file name for checking archive status.
         domain_name: Name of the domain being loaded (e.g., 'Prices', 'Metadata').
     """
+    file_pattern, archive_name_format = resolve_bronze_file_patterns(exec_date, domain_name)
+
     try:
         date.fromisoformat(exec_date)
     except ValueError:
