@@ -67,22 +67,10 @@ def validate_silver_prices() -> None:
 @task(task_id="task_load_gold_prices", pool="spark_write_pool")
 def load_gold_prices(**context: Any) -> None:
     """Loads deduplicated stock prices from Silver Layer to Gold Layer using staging tables."""
-    from airflow.providers.clickhousedb.hooks.clickhouse import ClickHouseHook
-
     from src.streaming.gold import run_gold
+    from src.utils.dag_helpers import setup_clickhouse_env
 
-    try:
-        conn = ClickHouseHook.get_connection("clickhouse_default")
-        os.environ["CLICKHOUSE_HOST"] = conn.host or "clickhouse"
-        os.environ["CLICKHOUSE_PORT"] = str(conn.port or 8123)
-        os.environ["CLICKHOUSE_USER"] = conn.login or "default"
-        os.environ["CLICKHOUSE_PASSWORD"] = conn.password or ""
-        os.environ["CLICKHOUSE_DB"] = conn.schema or "stock_market"
-    except Exception as e:
-        import logging
-
-        logging.getLogger("airflow.dag").warning("Failed to get clickhouse connection from Airflow: %s", e)
-
+    setup_clickhouse_env()
     exec_date = context["ds"]
     run_gold(exec_date=exec_date, table="prices")
 

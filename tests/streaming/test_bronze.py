@@ -41,7 +41,7 @@ def test_bronze_success_path(spark_session, tmp_path):
         patch("src.streaming.bronze.LANDING_PRICES_DIR", landing_dir),
         patch("src.streaming.bronze.BRONZE_PRICES_DIR", bronze_dir),
         patch("src.streaming.bronze.ARCHIVE_PRICES_DIR", archive_dir),
-        patch("src.streaming.bronze.create_spark_session", return_value=spark_session),
+        patch("src.streaming.utils.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
         main()
@@ -73,7 +73,7 @@ def test_bronze_empty_landing(spark_session, tmp_path):
         patch("src.streaming.bronze.LANDING_PRICES_DIR", landing_dir),
         patch("src.streaming.bronze.BRONZE_PRICES_DIR", bronze_dir),
         patch("src.streaming.bronze.ARCHIVE_PRICES_DIR", archive_dir),
-        patch("src.streaming.bronze.create_spark_session", return_value=spark_session),
+        patch("src.streaming.utils.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
         main()
@@ -122,8 +122,8 @@ def test_bronze_processing_failure(spark_session, tmp_path):
             patch("src.streaming.bronze.LANDING_PRICES_DIR", landing_dir),
             patch("src.streaming.bronze.BRONZE_PRICES_DIR", bronze_dir),
             patch("src.streaming.bronze.ARCHIVE_PRICES_DIR", archive_dir),
-            patch("src.streaming.bronze.create_spark_session", return_value=spark_session),
-            patch("src.streaming.bronze.write_delta_table", side_effect=Exception("Simulated writing failure")),
+            patch("src.streaming.utils.create_spark_session", return_value=spark_session),
+            patch("src.streaming.utils.write_delta_table", side_effect=Exception("Simulated writing failure")),
             patch.object(spark_session, "stop"),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -175,7 +175,7 @@ def test_bronze_date_from_arguments(spark_session, tmp_path):
         patch("src.streaming.bronze.LANDING_PRICES_DIR", landing_dir),
         patch("src.streaming.bronze.BRONZE_PRICES_DIR", bronze_dir),
         patch("src.streaming.bronze.ARCHIVE_PRICES_DIR", archive_dir),
-        patch("src.streaming.bronze.create_spark_session", return_value=spark_session),
+        patch("src.streaming.utils.create_spark_session", return_value=spark_session),
         patch("sys.argv", ["bronze.py", "--date", "2026-05-28"]),
         patch.object(spark_session, "stop"),
     ):
@@ -207,7 +207,7 @@ def test_bronze_invalid_date_format(spark_session, tmp_path):
             patch("src.streaming.bronze.LANDING_PRICES_DIR", landing_dir),
             patch("src.streaming.bronze.BRONZE_PRICES_DIR", bronze_dir),
             patch("src.streaming.bronze.ARCHIVE_PRICES_DIR", archive_dir),
-            patch("src.streaming.bronze.create_spark_session", return_value=spark_session),
+            patch("src.streaming.utils.create_spark_session", return_value=spark_session),
             patch("sys.argv", ["bronze.py", "--date", "invalid_date_format"]),
             patch.object(spark_session, "stop"),
             pytest.raises(SystemExit) as exc_info,
