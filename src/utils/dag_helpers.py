@@ -31,4 +31,3 @@ def setup_clickhouse_env() -> None:
         os.environ["CLICKHOUSE_DB"] = conn.schema or "stock_market"
     except Exception as e:
         logging.getLogger("airflow.dag").warning("Failed to get clickhouse connection from Airflow: %s", e)
-

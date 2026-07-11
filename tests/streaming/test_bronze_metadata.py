@@ -127,9 +127,7 @@ def test_bronze_metadata_processing_failure(spark_session, tmp_path):
             patch("src.streaming.bronze_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
             patch("src.streaming.bronze_metadata.ARCHIVE_METADATA_DIR", archive_metadata_dir),
             patch("src.streaming.utils.create_spark_session", return_value=spark_session),
-            patch(
-                "src.streaming.utils.write_delta_table", side_effect=Exception("Simulated writing failure")
-            ),
+            patch("src.streaming.utils.write_delta_table", side_effect=Exception("Simulated writing failure")),
             patch.object(spark_session, "stop"),
             pytest.raises(SystemExit) as exc_info,
         ):
