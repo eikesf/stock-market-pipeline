@@ -37,13 +37,13 @@ def test_bronze_metadata_success_path(spark_session, tmp_path):
         }
     )
 
-    df_dummy.to_parquet(landing_metadata_dir / "metadata_2026-05-28.parquet", index=False)
+    df_dummy.to_parquet(landing_metadata_dir / "ticker_metadata_2026-05-28.parquet", index=False)
 
     with (
         patch("src.streaming.bronze_metadata.LANDING_METADATA_DIR", landing_metadata_dir),
         patch("src.streaming.bronze_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
         patch("src.streaming.bronze_metadata.ARCHIVE_METADATA_DIR", archive_metadata_dir),
-        patch("src.streaming.bronze_metadata.create_spark_session", return_value=spark_session),
+        patch("src.streaming.utils.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
         main()
@@ -75,7 +75,7 @@ def test_bronze_metadata_empty_landing(spark_session, tmp_path):
         patch("src.streaming.bronze_metadata.LANDING_METADATA_DIR", landing_metadata_dir),
         patch("src.streaming.bronze_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
         patch("src.streaming.bronze_metadata.ARCHIVE_METADATA_DIR", archive_metadata_dir),
-        patch("src.streaming.bronze_metadata.create_spark_session", return_value=spark_session),
+        patch("src.streaming.utils.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
         main()
@@ -115,7 +115,7 @@ def test_bronze_metadata_processing_failure(spark_session, tmp_path):
         }
     )
 
-    df_dummy.to_parquet(landing_metadata_dir / "metadata_2026-05-28.parquet", index=False)
+    df_dummy.to_parquet(landing_metadata_dir / "ticker_metadata_2026-05-28.parquet", index=False)
 
     # Capture logs to assert expected error messages on pipeline failure
     captured_logs = []
@@ -126,10 +126,8 @@ def test_bronze_metadata_processing_failure(spark_session, tmp_path):
             patch("src.streaming.bronze_metadata.LANDING_METADATA_DIR", landing_metadata_dir),
             patch("src.streaming.bronze_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
             patch("src.streaming.bronze_metadata.ARCHIVE_METADATA_DIR", archive_metadata_dir),
-            patch("src.streaming.bronze_metadata.create_spark_session", return_value=spark_session),
-            patch(
-                "src.streaming.bronze_metadata.write_delta_table", side_effect=Exception("Simulated writing failure")
-            ),
+            patch("src.streaming.utils.create_spark_session", return_value=spark_session),
+            patch("src.streaming.utils.write_delta_table", side_effect=Exception("Simulated writing failure")),
             patch.object(spark_session, "stop"),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -177,13 +175,13 @@ def test_bronze_metadata_date_from_arguments(spark_session, tmp_path):
         }
     )
 
-    df_dummy.to_parquet(landing_metadata_dir / "metadata_2026-05-28.parquet", index=False)
+    df_dummy.to_parquet(landing_metadata_dir / "ticker_metadata_2026-05-28.parquet", index=False)
 
     with (
         patch("src.streaming.bronze_metadata.LANDING_METADATA_DIR", landing_metadata_dir),
         patch("src.streaming.bronze_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
         patch("src.streaming.bronze_metadata.ARCHIVE_METADATA_DIR", archive_metadata_dir),
-        patch("src.streaming.bronze_metadata.create_spark_session", return_value=spark_session),
+        patch("src.streaming.utils.create_spark_session", return_value=spark_session),
         patch("sys.argv", ["bronze_metadata.py", "--date", "2026-05-28"]),
         patch.object(spark_session, "stop"),
     ):
@@ -215,7 +213,7 @@ def test_bronze_metadata_invalid_date_format(spark_session, tmp_path):
             patch("src.streaming.bronze_metadata.LANDING_METADATA_DIR", landing_metadata_dir),
             patch("src.streaming.bronze_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
             patch("src.streaming.bronze_metadata.ARCHIVE_METADATA_DIR", archive_metadata_dir),
-            patch("src.streaming.bronze_metadata.create_spark_session", return_value=spark_session),
+            patch("src.streaming.utils.create_spark_session", return_value=spark_session),
             patch("sys.argv", ["bronze_metadata.py", "--date", "invalid_date_format"]),
             patch.object(spark_session, "stop"),
             pytest.raises(SystemExit) as exc_info,
