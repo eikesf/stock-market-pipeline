@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import json
 import os
 import re
 import shutil
@@ -7,12 +9,108 @@ from datetime import date
 from pathlib import Path
 
 import clickhouse_connect
+import pyarrow.parquet as pq
 from clickhouse_connect.driver.client import Client
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import current_timestamp
 
 from src.streaming.spark_session import create_spark_session
 from src.utils.logger import logger
+
+
+def _is_checkpoint_corrupted(checkpoint_file: Path) -> bool:
+    """Check if the checkpoint parquet file is corrupted."""
+    try:
+        pq_file = pq.ParquetFile(str(checkpoint_file))
+        if pq_file.num_row_groups > 0:
+            pq_file.read_row_group(0)
+        return False
+    except Exception as e:
+        logger.warning(f"Detected corrupted Delta checkpoint file {checkpoint_file.name}: {e}")
+        return True
+
+
+def _rollback_to_previous_checkpoint(log_dir: Path, last_checkpoint_file: Path) -> bool:
+    """Find and rollback to the previous valid checkpoint.
+
+    Returns True if successfully rolled back, False otherwise.
+    """
+    checkpoint_files = sorted(log_dir.glob("*.checkpoint.parquet"))
+    if not checkpoint_files:
+        return False
+
+    latest_remaining = checkpoint_files[-1]
+    if _is_checkpoint_corrupted(latest_remaining):
+        return False
+
+    try:
+        prev_version = int(latest_remaining.name.split(".")[0])
+        new_checkpoint_data = {
+            "version": prev_version,
+            "size": 12,
+            "sizeInBytes": latest_remaining.stat().st_size,
+            "numOfAddFiles": 1,
+        }
+        with open(last_checkpoint_file, "w") as f:
+            json.dump(new_checkpoint_data, f)
+        logger.info(f"Updated _last_checkpoint to point to previous valid version {prev_version}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to rollback to previous checkpoint {latest_remaining.name}: {e}")
+        return False
+
+
+def heal_corrupt_delta_checkpoints(path: str | Path) -> None:
+    """Checks the Delta table's latest checkpoint file and heals it if corrupted.
+
+    If the parquet checkpoint file specified in _last_checkpoint is unreadable
+    or corrupted, it deletes the file and updates _last_checkpoint to point to
+    the previous checkpoint version (or deletes _last_checkpoint if no previous
+    version exists). This forces Spark to fallback and self-heal automatically.
+
+    Args:
+        path: Path to the Delta table directory.
+    """
+    log_dir = Path(path) / "_delta_log"
+    if not log_dir.exists():
+        return
+
+    last_checkpoint_file = log_dir / "_last_checkpoint"
+    if not last_checkpoint_file.exists():
+        return
+
+    try:
+        with open(last_checkpoint_file) as f:
+            checkpoint_data = json.load(f)
+        version = checkpoint_data.get("version")
+    except Exception as e:
+        logger.warning(f"Could not read _last_checkpoint for {path}: {e}. Deleting it to force fallback.")
+        with contextlib.suppress(Exception):
+            last_checkpoint_file.unlink(missing_ok=True)
+        return
+
+    if version is None:
+        return
+
+    checkpoint_file = log_dir / f"{version:020d}.checkpoint.parquet"
+    if not checkpoint_file.exists():
+        return
+
+    if _is_checkpoint_corrupted(checkpoint_file):
+        logger.info(f"Healing Delta table at {path}...")
+        with contextlib.suppress(Exception):
+            checkpoint_file.unlink(missing_ok=True)
+            logger.info(f"Deleted corrupted checkpoint file: {checkpoint_file.name}")
+
+        if _rollback_to_previous_checkpoint(log_dir, last_checkpoint_file):
+            return
+
+        # Fallback: Delete _last_checkpoint entirely to force replay from JSON log files
+        try:
+            last_checkpoint_file.unlink(missing_ok=True)
+            logger.info("Deleted _last_checkpoint to force full JSON log replay fallback.")
+        except Exception as e:
+            logger.error(f"Failed to delete _last_checkpoint file: {e}")
 
 
 def read_delta_table(spark: SparkSession, path: str | Path) -> DataFrame:
@@ -25,6 +123,7 @@ def read_delta_table(spark: SparkSession, path: str | Path) -> DataFrame:
     Returns:
         A Spark DataFrame loaded from the Delta path.
     """
+    heal_corrupt_delta_checkpoints(path)
     return spark.read.format("delta").load(str(path))
 
 
@@ -39,6 +138,7 @@ def write_delta_table(df: DataFrame, path: str | Path, mode: str = "append") -> 
         path: Target path for the Delta table.
         mode: Spark write mode (e.g., 'append', 'overwrite').
     """
+    heal_corrupt_delta_checkpoints(path)
     writer = df.write.format("delta").mode(mode)
     if mode == "overwrite":
         writer = writer.option("overwriteSchema", "true")
