@@ -1,7 +1,16 @@
+import json
 import os
 from unittest.mock import MagicMock, patch
 
-from src.streaming.utils import get_clickhouse_client, read_delta_table, write_delta_table
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from src.streaming.utils import (
+    get_clickhouse_client,
+    heal_corrupt_delta_checkpoints,
+    read_delta_table,
+    write_delta_table,
+)
 
 
 @patch("clickhouse_connect.get_client")
@@ -79,3 +88,94 @@ def test_write_delta_table_overwrite():
     mock_df.write.format.return_value.mode.assert_called_once_with("overwrite")
     mock_writer.option.assert_called_once_with("overwriteSchema", "true")
     mock_writer.save.assert_called_once_with("dummy_path")
+
+
+def test_heal_corrupt_delta_checkpoints_no_corruption(tmp_path):
+    """Test that a healthy checkpoint is not modified."""
+    log_dir = tmp_path / "_delta_log"
+    log_dir.mkdir()
+
+    # Write a valid checkpoint file
+    checkpoint_file = log_dir / "00000000000000000100.checkpoint.parquet"
+    table = pa.table({"col": [1, 2, 3]})
+    pq.write_table(table, str(checkpoint_file))
+
+    # Write _last_checkpoint
+    last_checkpoint_file = log_dir / "_last_checkpoint"
+    checkpoint_info = {
+        "version": 100,
+        "size": 12,
+        "sizeInBytes": checkpoint_file.stat().st_size,
+        "numOfAddFiles": 1,
+    }
+    with open(last_checkpoint_file, "w") as f:
+        json.dump(checkpoint_info, f)
+
+    # Run healing
+    heal_corrupt_delta_checkpoints(tmp_path)
+
+    # Assert nothing was deleted
+    assert checkpoint_file.exists()
+    assert last_checkpoint_file.exists()
+    with open(last_checkpoint_file) as f:
+        data = json.load(f)
+    assert data["version"] == 100
+
+
+def test_heal_corrupt_delta_checkpoints_heals_to_previous(tmp_path):
+    """Test healing when current checkpoint is corrupt but a previous valid one exists."""
+    log_dir = tmp_path / "_delta_log"
+    log_dir.mkdir()
+
+    # Write a valid v100 checkpoint file
+    prev_checkpoint = log_dir / "00000000000000000100.checkpoint.parquet"
+    table = pa.table({"col": [1, 2, 3]})
+    pq.write_table(table, str(prev_checkpoint))
+
+    # Write a corrupted v110 checkpoint file
+    corrupt_checkpoint = log_dir / "00000000000000000110.checkpoint.parquet"
+    with open(corrupt_checkpoint, "wb") as f:
+        f.write(b"corrupt header thrift data")
+
+    # Write _last_checkpoint pointing to corrupt v110
+    last_checkpoint_file = log_dir / "_last_checkpoint"
+    checkpoint_info = {"version": 110, "size": 12, "sizeInBytes": 100, "numOfAddFiles": 1}
+    with open(last_checkpoint_file, "w") as f:
+        json.dump(checkpoint_info, f)
+
+    # Run healing
+    heal_corrupt_delta_checkpoints(tmp_path)
+
+    # Assert corrupt file was deleted
+    assert not corrupt_checkpoint.exists()
+    # Assert previous valid file still exists
+    assert prev_checkpoint.exists()
+    # Assert _last_checkpoint was updated to v100
+    with open(last_checkpoint_file) as f:
+        data = json.load(f)
+    assert data["version"] == 100
+
+
+def test_heal_corrupt_delta_checkpoints_deletes_last_checkpoint_when_no_prev(tmp_path):
+    """Test healing when current checkpoint is corrupt and no valid previous checkpoint exists."""
+    log_dir = tmp_path / "_delta_log"
+    log_dir.mkdir()
+
+    # Write a corrupted v110 checkpoint file
+    corrupt_checkpoint = log_dir / "00000000000000000110.checkpoint.parquet"
+    with open(corrupt_checkpoint, "wb") as f:
+        f.write(b"corrupt header thrift data")
+
+    # Write _last_checkpoint pointing to corrupt v110
+    last_checkpoint_file = log_dir / "_last_checkpoint"
+    checkpoint_info = {"version": 110, "size": 12, "sizeInBytes": 100, "numOfAddFiles": 1}
+    with open(last_checkpoint_file, "w") as f:
+        json.dump(checkpoint_info, f)
+
+    # Run healing
+    heal_corrupt_delta_checkpoints(tmp_path)
+
+    # Assert corrupt file was deleted
+    assert not corrupt_checkpoint.exists()
+    # Assert _last_checkpoint was deleted entirely to trigger log replay fallback
+    assert not last_checkpoint_file.exists()
