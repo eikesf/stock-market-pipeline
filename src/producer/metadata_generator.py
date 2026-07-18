@@ -2,6 +2,8 @@ import argparse
 import sys
 import time
 from datetime import date
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import yfinance as yf
@@ -65,7 +67,74 @@ def cast_int_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def run_metadata_generator(  # noqa: C901
+def _check_metadata_file_exists(exec_date: str) -> bool:
+    """Check if metadata file for the execution date already exists."""
+    target_path = f"ticker_metadata_{exec_date}.parquet"
+    in_landing = (LANDING_METADATA_DIR / target_path).exists()
+    in_archive = (ARCHIVE_METADATA_DIR / target_path).exists()
+    if in_landing or in_archive:
+        location = "landing" if in_landing else "archive"
+        logger.info(f"Metadata file for {exec_date} already exists in {location}. Skipping download.")
+        return True
+    return False
+
+
+def _fetch_ticker_metadata(ticker: str, exec_date: str) -> dict[str, Any]:
+    """Fetch details of a single ticker from yfinance."""
+    stock = yf.Ticker(ticker)
+    info = stock.info
+
+    return {
+        "ticker": ticker,
+        "short_name": str(info.get("shortName") or "N/A"),
+        "sector": str(info.get("sector") or "N/A"),
+        "industry": str(info.get("industry") or "N/A"),
+        "country": str(info.get("country") or "N/A"),
+        "isin": str(info.get("isin") or "N/A"),
+        "full_time_employees": clean_int(info.get("fullTimeEmployees")),
+        "exchange": str(info.get("exchange") or "N/A"),
+        "market_cap": clean_int(info.get("marketCap")),
+        "currency": str(info.get("currency") or "N/A"),
+        "dividend_yield": clean_float(info.get("dividendYield")),
+        "trailing_pe": clean_float(info.get("trailingPE")),
+        "peg_ratio": clean_float(info.get("pegRatio")),
+        "price_to_book": clean_float(info.get("priceToBook")),
+        "enterprise_to_ebitda": clean_float(info.get("enterpriseToEbitda")),
+        "enterprise_to_ebit": clean_float(info.get("enterpriseToEbit")),
+        "book_value": clean_float(info.get("bookValue")),
+        "trailing_eps": clean_float(info.get("trailingEps")),
+        "price_to_sales": clean_float(info.get("priceToSalesTrailing12Months")),
+        "operating_margins": clean_float(info.get("operatingMargins")),
+        "asset_turnover": clean_float(info.get("assetTurnover")),
+        "shares_outstanding": clean_int(info.get("sharesOutstanding")),
+        "ebitda": clean_int(info.get("ebitda")),
+        "total_debt": clean_int(info.get("totalDebt")),
+        "total_cash": clean_int(info.get("totalCash")),
+        "debt_to_equity": clean_float(info.get("debtToEquity")),
+        "roa": clean_float(info.get("returnOnAssets")),
+        "roe": clean_float(info.get("returnOnEquity")),
+        "current_ratio": clean_float(info.get("currentRatio")),
+        "gross_margins": clean_float(info.get("grossMargins")),
+        "ebitda_margins": clean_float(info.get("ebitdaMargins")),
+        "profit_margins": clean_float(info.get("profitMargins")),
+        "net_income_to_common": clean_int(info.get("netIncomeToCommon")),
+        "extraction_date": exec_date,
+    }
+
+
+def _save_metadata_to_parquet(df: pd.DataFrame, target_file: Path, raise_on_error: bool) -> None:
+    """Save the metadata DataFrame to Parquet with error handling."""
+    try:
+        df.to_parquet(target_file, index=False, compression="snappy")
+        logger.success(f"✅ Metadata successfully saved to {target_file}")
+    except Exception as e:
+        logger.opt(exception=True).critical(f"Failed to write parquet file: {target_file}")
+        if raise_on_error:
+            raise e
+        sys.exit(1)
+
+
+def run_metadata_generator(
     exec_date: str | None = None, tickers: list[str] | None = None, raise_on_error: bool = False
 ) -> None:
     """Extract company metadata from yFinance and persist to the Landing zone.
@@ -89,13 +158,7 @@ def run_metadata_generator(  # noqa: C901
         exec_date = date.today().isoformat()
 
     # Check if a file for the execution date already exists in landing or archive directory
-    target_path = f"ticker_metadata_{exec_date}.parquet"
-    in_landing = (LANDING_METADATA_DIR / target_path).exists()
-    in_archive = (ARCHIVE_METADATA_DIR / target_path).exists()
-
-    if in_landing or in_archive:
-        location = "landing" if in_landing else "archive"
-        logger.info(f"Metadata file for {exec_date} already exists in {location}. Skipping download.")
+    if _check_metadata_file_exists(exec_date):
         return
 
     # Grab tickers from the dictionary if not provided
@@ -112,47 +175,7 @@ def run_metadata_generator(  # noqa: C901
             if i % 10 == 0:
                 logger.info(f"Processing {i}/{len(tickers)}...")
 
-            # Access Yahoo API for a specific ticker
-            stock = yf.Ticker(t)
-            info = stock.info
-
-            record = {
-                "ticker": t,
-                "short_name": str(info.get("shortName") or "N/A"),
-                "sector": str(info.get("sector") or "N/A"),
-                "industry": str(info.get("industry") or "N/A"),
-                "country": str(info.get("country") or "N/A"),
-                "isin": str(info.get("isin") or "N/A"),
-                "full_time_employees": clean_int(info.get("fullTimeEmployees")),
-                "exchange": str(info.get("exchange") or "N/A"),
-                "market_cap": clean_int(info.get("marketCap")),
-                "currency": str(info.get("currency") or "N/A"),
-                "dividend_yield": clean_float(info.get("dividendYield")),
-                "trailing_pe": clean_float(info.get("trailingPE")),
-                "peg_ratio": clean_float(info.get("pegRatio")),
-                "price_to_book": clean_float(info.get("priceToBook")),
-                "enterprise_to_ebitda": clean_float(info.get("enterpriseToEbitda")),
-                "enterprise_to_ebit": clean_float(info.get("enterpriseToEbit")),
-                "book_value": clean_float(info.get("bookValue")),
-                "trailing_eps": clean_float(info.get("trailingEps")),
-                "price_to_sales": clean_float(info.get("priceToSalesTrailing12Months")),
-                "operating_margins": clean_float(info.get("operatingMargins")),
-                "asset_turnover": clean_float(info.get("assetTurnover")),
-                "shares_outstanding": clean_int(info.get("sharesOutstanding")),
-                "ebitda": clean_int(info.get("ebitda")),
-                "total_debt": clean_int(info.get("totalDebt")),
-                "total_cash": clean_int(info.get("totalCash")),
-                "debt_to_equity": clean_float(info.get("debtToEquity")),
-                "roa": clean_float(info.get("returnOnAssets")),
-                "roe": clean_float(info.get("returnOnEquity")),
-                "current_ratio": clean_float(info.get("currentRatio")),
-                "gross_margins": clean_float(info.get("grossMargins")),
-                "ebitda_margins": clean_float(info.get("ebitdaMargins")),
-                "profit_margins": clean_float(info.get("profitMargins")),
-                "net_income_to_common": clean_int(info.get("netIncomeToCommon")),
-                "extraction_date": exec_date,
-            }
-
+            record = _fetch_ticker_metadata(t, exec_date)
             metadata_records.append(record)
             time.sleep(0.1)
         except Exception as e:
@@ -170,15 +193,7 @@ def run_metadata_generator(  # noqa: C901
     df_metadata = cast_int_columns(df_metadata)
     metadata_path = LANDING_METADATA_DIR / f"ticker_metadata_{exec_date}.parquet"
 
-    try:
-        # Save the dataframe in parquet format
-        df_metadata.to_parquet(metadata_path, index=False, compression="snappy")
-        logger.success(f"✅ Metadata successfully saved to {metadata_path}")
-    except Exception as e:
-        logger.opt(exception=True).critical(f"Failed to write parquet file: {metadata_path}")
-        if raise_on_error:
-            raise e
-        sys.exit(1)
+    _save_metadata_to_parquet(df_metadata, metadata_path, raise_on_error)
 
 
 def main() -> None:

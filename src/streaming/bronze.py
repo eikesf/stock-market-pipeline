@@ -21,9 +21,11 @@ def run_bronze(exec_date: str, raise_on_error: bool = False) -> None:
     """
     ingest_landing_to_bronze(
         exec_date=exec_date,
-        landing_dir=LANDING_PRICES_DIR,
-        archive_dir=ARCHIVE_PRICES_DIR,
-        bronze_dir=BRONZE_PRICES_DIR,
+        paths={
+            "landing": LANDING_PRICES_DIR,
+            "archive": ARCHIVE_PRICES_DIR,
+            "bronze": BRONZE_PRICES_DIR,
+        },
         domain_name="Prices",
         raise_on_error=raise_on_error,
     )

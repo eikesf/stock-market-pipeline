@@ -211,11 +211,9 @@ def resolve_bronze_filename(exec_date: str, domain_name: str) -> str:
     return f"ticker_metadata_{exec_date}.parquet"
 
 
-def ingest_landing_to_bronze(  # noqa: PLR0913
+def ingest_landing_to_bronze(
     exec_date: str,
-    landing_dir: Path,
-    archive_dir: Path,
-    bronze_dir: Path,
+    paths: dict[str, Path],
     domain_name: str,
     raise_on_error: bool = False,
 ) -> None:
@@ -227,12 +225,13 @@ def ingest_landing_to_bronze(  # noqa: PLR0913
 
     Args:
         exec_date: Target execution date in YYYY-MM-DD format.
-        landing_dir: Path to the Landing zone directory.
-        archive_dir: Path to the Archive directory.
-        bronze_dir: Path to the Bronze layer Delta table.
+        paths: A dictionary containing 'landing', 'archive', and 'bronze' Paths.
         domain_name: Name of the domain being loaded (e.g., 'Prices', 'Metadata').
         raise_on_error: If True, raise validation and execution errors.
     """
+    landing_dir = paths["landing"]
+    archive_dir = paths["archive"]
+    bronze_dir = paths["bronze"]
     filename = resolve_bronze_filename(exec_date, domain_name)
     landing_file = landing_dir / filename
 

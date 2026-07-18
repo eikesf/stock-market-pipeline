@@ -21,9 +21,11 @@ def run_bronze_metadata(exec_date: str, raise_on_error: bool = False) -> None:
     """
     ingest_landing_to_bronze(
         exec_date=exec_date,
-        landing_dir=LANDING_METADATA_DIR,
-        archive_dir=ARCHIVE_METADATA_DIR,
-        bronze_dir=BRONZE_METADATA_DIR,
+        paths={
+            "landing": LANDING_METADATA_DIR,
+            "archive": ARCHIVE_METADATA_DIR,
+            "bronze": BRONZE_METADATA_DIR,
+        },
         domain_name="Metadata",
         raise_on_error=raise_on_error,
     )

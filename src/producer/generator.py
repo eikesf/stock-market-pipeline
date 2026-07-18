@@ -1,6 +1,7 @@
 import argparse
 import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
@@ -55,9 +56,50 @@ def _reshape_and_clean_prices(data: pd.DataFrame, tickers: list[str]) -> pd.Data
     return tickers_long
 
 
-def run_generator(  # noqa: C901
-    exec_date: str, tickers: list[str] | None = None, raise_on_error: bool = False
-) -> None:
+def _check_if_file_exists(exec_date: str) -> bool:
+    """Check if prices file for the execution date already exists."""
+    target_path = f"tickers_{exec_date}.parquet"
+    in_landing = (LANDING_PRICES_DIR / target_path).exists()
+    in_archive = (ARCHIVE_PRICES_DIR / target_path).exists()
+    if in_landing or in_archive:
+        location = "landing" if in_landing else "archive"
+        logger.info(f"Prices file for {exec_date} already exists in {location}. Skipping download.")
+        return True
+    return False
+
+
+def _download_prices(tickers: list[str], start_date: str, end_date: str, raise_on_error: bool) -> pd.DataFrame:
+    """Download prices from Yahoo Finance with error handling."""
+    try:
+        logger.info(f"Downloading data for {len(tickers)} tickers...")
+        return yf.download(
+            tickers=tickers,
+            start=start_date,
+            end=end_date,
+            actions=True,
+            auto_adjust=False,
+            progress=False,
+        )
+    except Exception as e:
+        logger.opt(exception=True).critical("Failed to download from Yahoo Finance. Aborting pipeline.")
+        if raise_on_error:
+            raise e
+        sys.exit(1)
+
+
+def _save_prices_to_parquet(df: pd.DataFrame, target_file: Path, raise_on_error: bool) -> None:
+    """Save the clean DataFrame to Parquet with error handling."""
+    try:
+        logger.info(f"Saving {df.shape[0]} rows to: {target_file}")
+        df.to_parquet(target_file, index=False, compression="snappy", engine="pyarrow", coerce_timestamps="us")
+    except Exception as e:
+        logger.opt(exception=True).critical(f"Failed to write parquet file: {target_file}")
+        if raise_on_error:
+            raise e
+        sys.exit(1)
+
+
+def run_generator(exec_date: str, tickers: list[str] | None = None, raise_on_error: bool = False) -> None:
     """Extract daily stock prices from yFinance and persist to the Landing zone.
 
     Downloads price data for the specified execution date, cleans it, and
@@ -74,19 +116,11 @@ def run_generator(  # noqa: C901
             parquet file fails.
     """
     # Check if a file for the execution date already exists in landing or archive directory
-    target_path = f"tickers_{exec_date}.parquet"
-    in_landing = (LANDING_PRICES_DIR / target_path).exists()
-    in_archive = (ARCHIVE_PRICES_DIR / target_path).exists()
-
-    if in_landing or in_archive:
-        location = "landing" if in_landing else "archive"
-        logger.info(f"Prices file for {exec_date} already exists in {location}. Skipping download.")
+    if _check_if_file_exists(exec_date):
         return
 
     # Convert exec_date to a date object to calculate the next day
     exec_date_obj = date.fromisoformat(exec_date)
-
-    # Calculating the end_date
     end_date = exec_date_obj + timedelta(days=1)
 
     # Grab all tickers by flattening the dictionary if not provided
@@ -102,22 +136,7 @@ def run_generator(  # noqa: C901
     if "USDBRL=X" not in tickers:
         tickers.append("USDBRL=X")
 
-    try:
-        logger.info(f"Downloading data for {len(tickers)} tickers...")
-        data = yf.download(
-            tickers=tickers,
-            start=exec_date,
-            end=end_date.isoformat(),
-            actions=True,
-            auto_adjust=False,
-            progress=False,
-        )
-    except Exception as e:
-        logger.opt(exception=True).critical("Failed to download from Yahoo Finance. Aborting pipeline.")
-        if raise_on_error:
-            raise e
-        sys.exit(1)
-
+    data = _download_prices(tickers, exec_date, end_date.isoformat(), raise_on_error)
     logger.debug(f"Raw data shape received from yfinance: {data.shape}")
 
     if data.empty:
@@ -135,17 +154,7 @@ def run_generator(  # noqa: C901
     target_path = f"tickers_{exec_date}.parquet"
     target_file = LANDING_PRICES_DIR / target_path
 
-    try:
-        # Saving in parquet without pandas index. Coercing timestamps to microseconds for Spark compatibility
-        logger.info(f"Saving {tickers_long.shape[0]} rows to: {target_file}")
-        tickers_long.to_parquet(
-            target_file, index=False, compression="snappy", engine="pyarrow", coerce_timestamps="us"
-        )
-    except Exception as e:
-        logger.opt(exception=True).critical(f"Failed to write parquet file: {target_file}")
-        if raise_on_error:
-            raise e
-        sys.exit(1)
+    _save_prices_to_parquet(tickers_long, target_file, raise_on_error)
 
     logger.success(f"Data successfully saved to: {target_file}")
     logger.info(f"Final shape: {tickers_long.shape[0]} rows and {tickers_long.shape[1]} columns.")
