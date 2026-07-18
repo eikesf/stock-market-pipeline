@@ -11,6 +11,7 @@ from pathlib import Path
 import clickhouse_connect
 import pyarrow.parquet as pq
 from clickhouse_connect.driver.client import Client
+from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import current_timestamp
 
@@ -210,7 +211,7 @@ def resolve_bronze_filename(exec_date: str, domain_name: str) -> str:
     return f"ticker_metadata_{exec_date}.parquet"
 
 
-def ingest_landing_to_bronze(
+def ingest_landing_to_bronze(  # noqa: PLR0913
     exec_date: str,
     landing_dir: Path,
     archive_dir: Path,
@@ -310,14 +311,13 @@ def find_version_introducing_file(table_path: Path, filename: str) -> int | None
                         data = json.loads(line)
                         if "add" in data and data["add"]["path"].endswith(filename):
                             return version
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to read commit JSON file {json_file.name}: {e}")
             continue
     return None
 
 
-def check_and_heal_corrupt_data_file(
-    table_paths: list[str | Path], error_message: str, spark: SparkSession
-) -> bool:
+def check_and_heal_corrupt_data_file(table_paths: list[str | Path], error_message: str, spark: SparkSession) -> bool:
     """Detect corrupted parquet files in a list of tables and rollback Delta table versions.
 
     Args:
@@ -356,7 +356,6 @@ def check_and_heal_corrupt_data_file(
 
         logger.info(f"Automatically rolling back table {path} to healthy version {prev_version}...")
         try:
-            from delta.tables import DeltaTable
             dt = DeltaTable.forPath(spark, str(path))
             dt.restoreToVersion(prev_version)
             logger.success(f"Delta table {path} successfully restored to healthy version {prev_version}")
@@ -374,4 +373,3 @@ def check_and_heal_corrupt_data_file(
             logger.error(f"Failed to execute Delta table restore on {path} to version {prev_version}: {re}")
 
     return False
-

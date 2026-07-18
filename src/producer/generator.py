@@ -55,7 +55,9 @@ def _reshape_and_clean_prices(data: pd.DataFrame, tickers: list[str]) -> pd.Data
     return tickers_long
 
 
-def run_generator(exec_date: str, tickers: list[str] | None = None, raise_on_error: bool = False) -> None:
+def run_generator(  # noqa: C901
+    exec_date: str, tickers: list[str] | None = None, raise_on_error: bool = False
+) -> None:
     """Extract daily stock prices from yFinance and persist to the Landing zone.
 
     Downloads price data for the specified execution date, cleans it, and
@@ -65,6 +67,7 @@ def run_generator(exec_date: str, tickers: list[str] | None = None, raise_on_err
         exec_date: Execution date in YYYY-MM-DD format.
         tickers: Optional list of tickers to download. If not provided,
             downloads all configured tickers.
+        raise_on_error: If True, raise errors instead of exiting.
 
     Raises:
         SystemExit: If the download fails, no tickers are found, or saving the

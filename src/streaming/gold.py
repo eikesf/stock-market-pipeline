@@ -227,6 +227,7 @@ def run_gold(exec_date: str, table: str = "all", raise_on_error: bool = False) -
     Args:
         exec_date: Execution date in YYYY-MM-DD format.
         table: Target table to load ("prices", "metadata", "metrics", or "all").
+        raise_on_error: If True, raise errors instead of exiting.
 
     Raises:
         SystemExit: If the date format is invalid or processing fails.
@@ -267,13 +268,16 @@ def run_gold(exec_date: str, table: str = "all", raise_on_error: bool = False) -
     except Exception as e:
         logger.exception(f"Failed to process Gold layer: {e}")
         from src.streaming.utils import check_and_heal_corrupt_data_file
+
         healed = check_and_heal_corrupt_data_file(
             [SILVER_PRICES_DIR, SILVER_METADATA_DIR, SILVER_METRICS_DIR], str(e), spark
         )
         if healed:
             logger.warning("Corrupted data file detected and Delta table self-healed. Reverted to previous version.")
             if raise_on_error:
-                raise RuntimeError("Corrupted data file detected and Delta table self-healed. Please retry the task.") from e
+                raise RuntimeError(
+                    "Corrupted data file detected and Delta table self-healed. Please retry the task."
+                ) from e
         if raise_on_error:
             raise e
         sys.exit(1)

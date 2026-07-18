@@ -65,7 +65,7 @@ def cast_int_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def run_metadata_generator(
+def run_metadata_generator(  # noqa: C901
     exec_date: str | None = None, tickers: list[str] | None = None, raise_on_error: bool = False
 ) -> None:
     """Extract company metadata from yFinance and persist to the Landing zone.
@@ -79,6 +79,7 @@ def run_metadata_generator(
             today's date.
         tickers: Optional list of tickers to download metadata for. If not
             provided, downloads metadata for all configured tickers.
+        raise_on_error: If True, raise errors instead of exiting.
 
     Raises:
         SystemExit: If no metadata records are retrieved or if saving the

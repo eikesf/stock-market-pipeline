@@ -8,7 +8,7 @@ from pyspark.sql.window import Window
 
 from src.producer.config import BRONZE_METADATA_DIR, SILVER_METADATA_DIR, SILVER_METRICS_DIR
 from src.streaming.spark_session import create_spark_session
-from src.streaming.utils import read_delta_table, write_delta_table
+from src.streaming.utils import check_and_heal_corrupt_data_file, read_delta_table, write_delta_table
 from src.utils.logger import logger
 
 
@@ -22,6 +22,7 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
 
     Args:
         exec_date: Execution date in YYYY-MM-DD format.
+        raise_on_error: If True, raise errors instead of exiting.
 
     Raises:
         SystemExit: If the date format is invalid or processing fails.
@@ -147,12 +148,13 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
 
     except Exception as e:
         logger.exception(f"Failed to process Silver layer metadata: {e}")
-        from src.streaming.utils import check_and_heal_corrupt_data_file
         healed = check_and_heal_corrupt_data_file([BRONZE_METADATA_DIR], str(e), spark)
         if healed:
             logger.warning("Corrupted data file detected and Delta table self-healed. Reverted to previous version.")
             if raise_on_error:
-                raise RuntimeError("Corrupted data file detected and Delta table self-healed. Please retry the task.") from e
+                raise RuntimeError(
+                    "Corrupted data file detected and Delta table self-healed. Please retry the task."
+                ) from e
         if raise_on_error:
             raise e
         sys.exit(1)
@@ -172,6 +174,7 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
 
     Args:
         exec_date: Execution date in YYYY-MM-DD format.
+        raise_on_error: If True, raise errors instead of exiting.
 
     Raises:
         SystemExit: If the date format is invalid or processing fails.
@@ -274,12 +277,13 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
 
     except Exception as e:
         logger.exception(f"Failed to process Silver metrics: {e}")
-        from src.streaming.utils import check_and_heal_corrupt_data_file
         healed = check_and_heal_corrupt_data_file([BRONZE_METADATA_DIR], str(e), spark)
         if healed:
             logger.warning("Corrupted data file detected and Delta table self-healed. Reverted to previous version.")
             if raise_on_error:
-                raise RuntimeError("Corrupted data file detected and Delta table self-healed. Please retry the task.") from e
+                raise RuntimeError(
+                    "Corrupted data file detected and Delta table self-healed. Please retry the task."
+                ) from e
         if raise_on_error:
             raise e
         sys.exit(1)

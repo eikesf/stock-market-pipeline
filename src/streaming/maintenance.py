@@ -27,6 +27,7 @@ def run_maintenance(retention_hours: float, raise_on_error: bool = False) -> Non
     Args:
         retention_hours: The age threshold in hours beyond which historical files
             will be permanently removed.
+        raise_on_error: If True, raise errors instead of exiting.
     """
     spark = None
 

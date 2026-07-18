@@ -6,13 +6,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from src.streaming.utils import (
+    check_and_heal_corrupt_data_file,
+    extract_corrupt_parquet_filename,
+    find_version_introducing_file,
     get_clickhouse_client,
     heal_corrupt_delta_checkpoints,
     read_delta_table,
     write_delta_table,
-    extract_corrupt_parquet_filename,
-    find_version_introducing_file,
-    check_and_heal_corrupt_data_file,
 )
 
 
