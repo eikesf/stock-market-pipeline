@@ -4,7 +4,7 @@ from src.producer.config import ARCHIVE_PRICES_DIR, BRONZE_PRICES_DIR, LANDING_P
 from src.streaming.utils import infer_execution_date, ingest_landing_to_bronze
 
 
-def run_bronze(exec_date: str) -> None:
+def run_bronze(exec_date: str, raise_on_error: bool = False) -> None:
     """Ingest stock prices from Landing Zone to Bronze Layer using Spark.
 
     Reads the raw stock prices parquet file for the specified execution date,
@@ -13,6 +13,7 @@ def run_bronze(exec_date: str) -> None:
 
     Args:
         exec_date: Execution date in YYYY-MM-DD format.
+        raise_on_error: If True, raise errors instead of exiting.
 
     Raises:
         SystemExit: If the date format is invalid, reading/writing fails, or
@@ -24,6 +25,7 @@ def run_bronze(exec_date: str) -> None:
         archive_dir=ARCHIVE_PRICES_DIR,
         bronze_dir=BRONZE_PRICES_DIR,
         domain_name="Prices",
+        raise_on_error=raise_on_error,
     )
 
 

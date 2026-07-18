@@ -12,7 +12,7 @@ from src.streaming.utils import read_delta_table, write_delta_table
 from src.utils.logger import logger
 
 
-def run_silver_metadata(exec_date: str) -> None:
+def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
     """Clean, standardize, and deduplicate stock metadata from Bronze to Silver.
 
     This function reads raw stock metadata from the Bronze layer, standardizes
@@ -28,13 +28,15 @@ def run_silver_metadata(exec_date: str) -> None:
     """
     try:
         date.fromisoformat(exec_date)
-    except ValueError:
+    except ValueError as e:
         logger.error("Invalid date format. Please use YYYY-MM-DD format.")
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     logger.info(f"Starting Silver layer processing for stock metadata (execution date: {exec_date})...")
 
-    spark = create_spark_session()
+    spark = create_spark_session(raise_on_error=raise_on_error)
     try:
         # Reading bronze metadata
         metadata_df_bronze = read_delta_table(spark, BRONZE_METADATA_DIR)
@@ -145,13 +147,21 @@ def run_silver_metadata(exec_date: str) -> None:
 
     except Exception as e:
         logger.exception(f"Failed to process Silver layer metadata: {e}")
+        from src.streaming.utils import check_and_heal_corrupt_data_file
+        healed = check_and_heal_corrupt_data_file([BRONZE_METADATA_DIR], str(e), spark)
+        if healed:
+            logger.warning("Corrupted data file detected and Delta table self-healed. Reverted to previous version.")
+            if raise_on_error:
+                raise RuntimeError("Corrupted data file detected and Delta table self-healed. Please retry the task.") from e
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     finally:
         spark.stop()
 
 
-def run_silver_metrics(exec_date: str) -> None:
+def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
     """Clean, cast, and deduplicate monthly financial metrics from Bronze to Silver.
 
     Reads raw stock metadata (which contains financial indicators) from the
@@ -168,13 +178,15 @@ def run_silver_metrics(exec_date: str) -> None:
     """
     try:
         date.fromisoformat(exec_date)
-    except ValueError:
+    except ValueError as e:
         logger.error("Invalid date format. Please use YYYY-MM-DD format.")
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     logger.info(f"Starting silver layer processing for stock metrics (execution date: {exec_date})...")
 
-    spark = create_spark_session()
+    spark = create_spark_session(raise_on_error=raise_on_error)
     try:
         # Reading bronze metadata
         metadata_df_bronze = read_delta_table(spark, BRONZE_METADATA_DIR)
@@ -262,6 +274,14 @@ def run_silver_metrics(exec_date: str) -> None:
 
     except Exception as e:
         logger.exception(f"Failed to process Silver metrics: {e}")
+        from src.streaming.utils import check_and_heal_corrupt_data_file
+        healed = check_and_heal_corrupt_data_file([BRONZE_METADATA_DIR], str(e), spark)
+        if healed:
+            logger.warning("Corrupted data file detected and Delta table self-healed. Reverted to previous version.")
+            if raise_on_error:
+                raise RuntimeError("Corrupted data file detected and Delta table self-healed. Please retry the task.") from e
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     finally:

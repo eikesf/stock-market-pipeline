@@ -65,7 +65,9 @@ def cast_int_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def run_metadata_generator(exec_date: str | None = None, tickers: list[str] | None = None) -> None:
+def run_metadata_generator(
+    exec_date: str | None = None, tickers: list[str] | None = None, raise_on_error: bool = False
+) -> None:
     """Extract company metadata from yFinance and persist to the Landing zone.
 
     Downloads and parses detailed stock metadata (such as profile, sector,
@@ -159,6 +161,8 @@ def run_metadata_generator(exec_date: str | None = None, tickers: list[str] | No
 
     if not metadata_records:
         logger.warning("No metadata records were successfully retrieved. Exiting.")
+        if raise_on_error:
+            return
         sys.exit(0)
 
     df_metadata = pd.DataFrame(metadata_records)
@@ -169,8 +173,10 @@ def run_metadata_generator(exec_date: str | None = None, tickers: list[str] | No
         # Save the dataframe in parquet format
         df_metadata.to_parquet(metadata_path, index=False, compression="snappy")
         logger.success(f"✅ Metadata successfully saved to {metadata_path}")
-    except Exception:
+    except Exception as e:
         logger.opt(exception=True).critical(f"Failed to write parquet file: {metadata_path}")
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
 

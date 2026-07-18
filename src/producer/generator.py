@@ -55,7 +55,7 @@ def _reshape_and_clean_prices(data: pd.DataFrame, tickers: list[str]) -> pd.Data
     return tickers_long
 
 
-def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
+def run_generator(exec_date: str, tickers: list[str] | None = None, raise_on_error: bool = False) -> None:
     """Extract daily stock prices from yFinance and persist to the Landing zone.
 
     Downloads price data for the specified execution date, cleans it, and
@@ -92,6 +92,8 @@ def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
 
     if not tickers:
         logger.critical("No tickers found to download. Aborting pipeline.")
+        if raise_on_error:
+            raise ValueError("No tickers found to download.")
         sys.exit(1)
 
     if "USDBRL=X" not in tickers:
@@ -107,14 +109,18 @@ def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
             auto_adjust=False,
             progress=False,
         )
-    except Exception:
+    except Exception as e:
         logger.opt(exception=True).critical("Failed to download from Yahoo Finance. Aborting pipeline.")
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     logger.debug(f"Raw data shape received from yfinance: {data.shape}")
 
     if data.empty:
         logger.warning("No data returned today (possible holiday or weekend). Exiting cleanly.")
+        if raise_on_error:
+            return
         sys.exit(0)
 
     # Reshape and clean data
@@ -132,8 +138,10 @@ def run_generator(exec_date: str, tickers: list[str] | None = None) -> None:
         tickers_long.to_parquet(
             target_file, index=False, compression="snappy", engine="pyarrow", coerce_timestamps="us"
         )
-    except Exception:
+    except Exception as e:
         logger.opt(exception=True).critical(f"Failed to write parquet file: {target_file}")
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     logger.success(f"Data successfully saved to: {target_file}")

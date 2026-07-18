@@ -216,6 +216,7 @@ def ingest_landing_to_bronze(
     archive_dir: Path,
     bronze_dir: Path,
     domain_name: str,
+    raise_on_error: bool = False,
 ) -> None:
     """Ingest files from Landing Zone to Bronze Layer using Spark.
 
@@ -229,14 +230,17 @@ def ingest_landing_to_bronze(
         archive_dir: Path to the Archive directory.
         bronze_dir: Path to the Bronze layer Delta table.
         domain_name: Name of the domain being loaded (e.g., 'Prices', 'Metadata').
+        raise_on_error: If True, raise validation and execution errors.
     """
     filename = resolve_bronze_filename(exec_date, domain_name)
     landing_file = landing_dir / filename
 
     try:
         date.fromisoformat(exec_date)
-    except ValueError:
+    except ValueError as e:
         logger.error("Invalid date format. Please use YYYY-MM-DD format.")
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     # Check if the file has already been archived or processed
@@ -282,3 +286,92 @@ def ingest_landing_to_bronze(
         raise e
 
     spark.stop()
+
+
+def extract_corrupt_parquet_filename(error_message: str) -> str | None:
+    """Extract standard Spark parquet filenames from an error message using regex."""
+    match = re.search(r"(part-\d+-[a-fA-F0-9\-]+\S*\.parquet)", error_message)
+    return match.group(1) if match else None
+
+
+def find_version_introducing_file(table_path: Path, filename: str) -> int | None:
+    """Scan Delta Table logs descending to find the version that introduced a file."""
+    log_dir = table_path / "_delta_log"
+    if not log_dir.exists():
+        return None
+
+    json_files = sorted(log_dir.glob("*.json"), reverse=True)
+    for json_file in json_files:
+        try:
+            version = int(json_file.name.split(".")[0])
+            with open(json_file, encoding="utf-8") as f:
+                for line in f:
+                    if filename in line:
+                        data = json.loads(line)
+                        if "add" in data and data["add"]["path"].endswith(filename):
+                            return version
+        except Exception:
+            continue
+    return None
+
+
+def check_and_heal_corrupt_data_file(
+    table_paths: list[str | Path], error_message: str, spark: SparkSession
+) -> bool:
+    """Detect corrupted parquet files in a list of tables and rollback Delta table versions.
+
+    Args:
+        table_paths: A list of Delta table paths to check.
+        error_message: Exception message to parse for corrupt filename.
+        spark: The active Spark session.
+
+    Returns:
+        True if a corrupt file was found and table successfully healed/rolled back.
+    """
+    corrupt_filename = extract_corrupt_parquet_filename(error_message)
+    if not corrupt_filename:
+        return False
+
+    for path_str in table_paths:
+        path = Path(path_str)
+        corrupt_file_path = path / corrupt_filename
+        if not corrupt_file_path.exists():
+            matching_files = list(path.glob(f"**/{corrupt_filename}"))
+            if matching_files:
+                corrupt_file_path = matching_files[0]
+            else:
+                continue
+
+        logger.warning(f"Detected corrupted data file {corrupt_filename} in Delta table {path}")
+
+        version = find_version_introducing_file(path, corrupt_filename)
+        if version is None:
+            logger.warning(f"Could not locate Delta version introducing corrupted file {corrupt_filename}")
+            continue
+
+        prev_version = version - 1
+        if prev_version < 0:
+            logger.error(f"Cannot rollback to version before 0 for table {path}")
+            continue
+
+        logger.info(f"Automatically rolling back table {path} to healthy version {prev_version}...")
+        try:
+            from delta.tables import DeltaTable
+            dt = DeltaTable.forPath(spark, str(path))
+            dt.restoreToVersion(prev_version)
+            logger.success(f"Delta table {path} successfully restored to healthy version {prev_version}")
+
+            try:
+                corrupt_file_path.unlink(missing_ok=True)
+                crc_file = corrupt_file_path.parent / f".{corrupt_file_path.name}.crc"
+                crc_file.unlink(missing_ok=True)
+                logger.info(f"Deleted physical corrupted file: {corrupt_file_path.name}")
+            except Exception as fe:
+                logger.warning(f"Failed to delete physical file {corrupt_file_path}: {fe}")
+
+            return True
+        except Exception as re:
+            logger.error(f"Failed to execute Delta table restore on {path} to version {prev_version}: {re}")
+
+    return False
+

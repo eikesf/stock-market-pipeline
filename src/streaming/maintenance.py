@@ -15,7 +15,7 @@ from src.streaming.spark_session import create_spark_session
 from src.utils.logger import logger
 
 
-def run_maintenance(retention_hours: float) -> None:
+def run_maintenance(retention_hours: float, raise_on_error: bool = False) -> None:
     """Run Delta Lake table maintenance (Compaction + vacuum) on all medallion tables.
 
     This function initializes a Spark session, disables the retention duration safety check
@@ -31,7 +31,7 @@ def run_maintenance(retention_hours: float) -> None:
     spark = None
 
     try:
-        spark = create_spark_session()
+        spark = create_spark_session(raise_on_error=raise_on_error)
         spark.conf.set("spark.databricks.delta.retentionDurationCheck.enabled", "false")
 
         paths_to_manage = [
@@ -55,6 +55,8 @@ def run_maintenance(retention_hours: float) -> None:
 
     except Exception as e:
         logger.error(f"Error running Delta table maintenance: {e}")
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     finally:
