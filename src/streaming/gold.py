@@ -221,26 +221,29 @@ def _process_gold_table(
         logger.warning(f"Silver {display_name} Delta table not found. Skipping {table_name} load.")
 
 
-def run_gold(exec_date: str, table: str = "all") -> None:
+def run_gold(exec_date: str, table: str = "all", raise_on_error: bool = False) -> None:
     """Clean and load prices, metadata, and metrics from Silver to Gold Layer (ClickHouse).
 
     Args:
         exec_date: Execution date in YYYY-MM-DD format.
         table: Target table to load ("prices", "metadata", "metrics", or "all").
+        raise_on_error: If True, raise errors instead of exiting.
 
     Raises:
         SystemExit: If the date format is invalid or processing fails.
     """
     try:
         date.fromisoformat(exec_date)
-    except ValueError:
+    except ValueError as e:
         logger.error("Invalid date format. Please use YYYY-MM-DD format.")
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     logger.info(f"Starting Gold layer processing for table '{table}' (execution date: {exec_date})...")
 
     # Creating spark session
-    spark = create_spark_session()
+    spark = create_spark_session(raise_on_error=raise_on_error)
     try:
         # Check delta tables existence based on selected table filter
         prices_exist = table in ("prices", "all") and (SILVER_PRICES_DIR / "_delta_log").exists()
@@ -264,6 +267,19 @@ def run_gold(exec_date: str, table: str = "all") -> None:
 
     except Exception as e:
         logger.exception(f"Failed to process Gold layer: {e}")
+        from src.streaming.utils import check_and_heal_corrupt_data_file
+
+        healed = check_and_heal_corrupt_data_file(
+            [SILVER_PRICES_DIR, SILVER_METADATA_DIR, SILVER_METRICS_DIR], str(e), spark
+        )
+        if healed:
+            logger.warning("Corrupted data file detected and Delta table self-healed. Reverted to previous version.")
+            if raise_on_error:
+                raise RuntimeError(
+                    "Corrupted data file detected and Delta table self-healed. Please retry the task."
+                ) from e
+        if raise_on_error:
+            raise e
         sys.exit(1)
     finally:
         # Stopping spark session

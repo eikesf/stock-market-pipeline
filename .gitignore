@@ -40,3 +40,6 @@ _delta_log/
 # Airflow
 airflow/logs/
 airflow/config/
+
+# Custom rules
+AGENTS.md

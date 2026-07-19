@@ -7,11 +7,11 @@ from pyspark.sql.window import Window
 
 from src.producer.config import BRONZE_PRICES_DIR, SILVER_PRICES_DIR
 from src.streaming.spark_session import create_spark_session
-from src.streaming.utils import read_delta_table, write_delta_table
+from src.streaming.utils import check_and_heal_corrupt_data_file, read_delta_table, write_delta_table
 from src.utils.logger import logger
 
 
-def run_silver(exec_date: str) -> None:
+def run_silver(exec_date: str, raise_on_error: bool = False) -> None:
     """Clean and deduplicate stock prices from Bronze to Silver Layer using Spark.
 
     Reads from the Bronze prices Delta table, drops records with missing critical
@@ -21,19 +21,22 @@ def run_silver(exec_date: str) -> None:
 
     Args:
         exec_date: Execution date in YYYY-MM-DD format.
+        raise_on_error: If True, raise errors instead of exiting.
 
     Raises:
         SystemExit: If the date format is invalid or processing fails.
     """
     try:
         date.fromisoformat(exec_date)
-    except ValueError:
+    except ValueError as e:
         logger.error("Invalid date format. Please use YYYY-MM-DD format.")
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     logger.info(f"Starting Silver layer processing for stock prices (execution date: {exec_date})...")
 
-    spark = create_spark_session()
+    spark = create_spark_session(raise_on_error=raise_on_error)
     try:
         # Reading bronze stock data
         stock_df_bronze = read_delta_table(spark, BRONZE_PRICES_DIR)
@@ -75,6 +78,15 @@ def run_silver(exec_date: str) -> None:
 
     except Exception as e:
         logger.exception(f"Failed to process Silver layer: {e}")
+        healed = check_and_heal_corrupt_data_file([BRONZE_PRICES_DIR], str(e), spark)
+        if healed:
+            logger.warning("Corrupted data file detected and Delta table self-healed. Reverted to previous version.")
+            if raise_on_error:
+                raise RuntimeError(
+                    "Corrupted data file detected and Delta table self-healed. Please retry the task."
+                ) from e
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     finally:

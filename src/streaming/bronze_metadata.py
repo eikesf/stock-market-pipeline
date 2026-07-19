@@ -4,7 +4,7 @@ from src.producer.config import ARCHIVE_METADATA_DIR, BRONZE_METADATA_DIR, LANDI
 from src.streaming.utils import infer_execution_date, ingest_landing_to_bronze
 
 
-def run_bronze_metadata(exec_date: str) -> None:
+def run_bronze_metadata(exec_date: str, raise_on_error: bool = False) -> None:
     """Ingest stock metadata from Landing Zone to Bronze Layer using Spark.
 
     Reads the raw stock metadata parquet file for the specified execution date,
@@ -13,6 +13,7 @@ def run_bronze_metadata(exec_date: str) -> None:
 
     Args:
         exec_date: Execution date in YYYY-MM-DD format.
+        raise_on_error: If True, raise errors instead of exiting.
 
     Raises:
         SystemExit: If the date format is invalid, reading/writing fails, or
@@ -20,10 +21,13 @@ def run_bronze_metadata(exec_date: str) -> None:
     """
     ingest_landing_to_bronze(
         exec_date=exec_date,
-        landing_dir=LANDING_METADATA_DIR,
-        archive_dir=ARCHIVE_METADATA_DIR,
-        bronze_dir=BRONZE_METADATA_DIR,
+        paths={
+            "landing": LANDING_METADATA_DIR,
+            "archive": ARCHIVE_METADATA_DIR,
+            "bronze": BRONZE_METADATA_DIR,
+        },
         domain_name="Metadata",
+        raise_on_error=raise_on_error,
     )
 
 

@@ -8,7 +8,7 @@ from pyspark.sql import SparkSession
 from src.utils.logger import logger
 
 
-def create_spark_session() -> SparkSession:
+def create_spark_session(raise_on_error: bool = False) -> SparkSession:
     """Create a Spark Session with Delta Lake configuration.
 
     Configures local filesystems, Delta extensions, catalogs, suppresses noisy
@@ -57,6 +57,8 @@ def create_spark_session() -> SparkSession:
 
     except Exception as e:
         logger.exception(f"Error creating SparkSession: {e}")
+        if raise_on_error:
+            raise e
         sys.exit(1)
 
     logger.success("Spark Session created successfully.")
