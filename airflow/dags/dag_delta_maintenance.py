@@ -26,7 +26,7 @@ def optimize_and_vacuum() -> None:
     """Run compaction and vacuum maintenance on all medallion tables."""
     from src.streaming.maintenance import run_maintenance
 
-    run_maintenance(retention_hours=168.0)
+    run_maintenance(retention_hours=168.0, raise_on_error=True)
 
 
 with DAG(

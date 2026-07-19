@@ -35,7 +35,7 @@ def extract_prices(**context: Any) -> None:
         tickers = None
 
     exec_date = context["ds"]
-    run_generator(exec_date=exec_date, tickers=tickers)
+    run_generator(exec_date=exec_date, tickers=tickers, raise_on_error=True)
 
 
 @task(task_id="task_ingest_bronze_prices", pool="spark_write_pool")
@@ -44,7 +44,7 @@ def ingest_bronze_prices(**context: Any) -> None:
     from src.streaming.bronze import run_bronze
 
     exec_date = context["ds"]
-    run_bronze(exec_date=exec_date)
+    run_bronze(exec_date=exec_date, raise_on_error=True)
 
 
 @task(task_id="task_deduplicate_silver_prices", pool="spark_write_pool")
@@ -53,7 +53,7 @@ def deduplicate_silver_prices(**context: Any) -> None:
     from src.streaming.silver import run_silver
 
     exec_date = context["ds"]
-    run_silver(exec_date=exec_date)
+    run_silver(exec_date=exec_date, raise_on_error=True)
 
 
 @task(task_id="task_validate_silver_prices", pool="spark_write_pool")
@@ -72,7 +72,7 @@ def load_gold_prices(**context: Any) -> None:
 
     setup_clickhouse_env()
     exec_date = context["ds"]
-    run_gold(exec_date=exec_date, table="prices")
+    run_gold(exec_date=exec_date, table="prices", raise_on_error=True)
 
 
 @task(task_id="task_validate_gold_prices")

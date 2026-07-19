@@ -35,7 +35,7 @@ def extract_metadata(**context: Any) -> None:
         tickers = None
 
     exec_date = context["ds"]
-    run_metadata_generator(exec_date=exec_date, tickers=tickers)
+    run_metadata_generator(exec_date=exec_date, tickers=tickers, raise_on_error=True)
 
 
 @task(task_id="task_ingest_bronze_metadata", pool="spark_write_pool")
@@ -44,7 +44,7 @@ def ingest_bronze_metadata(**context: Any) -> None:
     from src.streaming.bronze_metadata import run_bronze_metadata
 
     exec_date = context["ds"]
-    run_bronze_metadata(exec_date=exec_date)
+    run_bronze_metadata(exec_date=exec_date, raise_on_error=True)
 
 
 @task(task_id="task_deduplicate_silver_metadata", pool="spark_write_pool")
@@ -53,7 +53,7 @@ def deduplicate_silver_metadata(**context: Any) -> None:
     from src.streaming.silver_metadata import run_silver_metadata
 
     exec_date = context["ds"]
-    run_silver_metadata(exec_date=exec_date)
+    run_silver_metadata(exec_date=exec_date, raise_on_error=True)
 
 
 @task(task_id="task_validate_silver_metadata", pool="spark_write_pool")
@@ -72,7 +72,7 @@ def load_gold_metadata(**context: Any) -> None:
 
     setup_clickhouse_env()
     exec_date = context["ds"]
-    run_gold(exec_date=exec_date, table="metadata")
+    run_gold(exec_date=exec_date, table="metadata", raise_on_error=True)
 
 
 @task(task_id="task_validate_gold_companies")
