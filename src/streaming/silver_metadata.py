@@ -71,13 +71,28 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
             )
         )
 
-        # Adjusting the exchange names to correspond to the pattern
-        metadata_df_silver = metadata_df_silver.withColumn(
-            "exchange",
-            when(col("exchange") == "SAO", "B3")
-            .when(col("exchange") == "NYQ", "NYSE")
-            .when(col("exchange").isin("NMS", "NGM", "NCM", "NASDAQ"), "NASDAQ")
-            .otherwise(col("exchange")),
+        # Adjusting exchange and currency names to correspond to standard patterns
+        metadata_df_silver = (
+            metadata_df_silver.withColumn(
+                "exchange",
+                when(col("exchange") == "SAO", "B3")
+                .when(col("exchange") == "NYQ", "NYSE")
+                .when(col("exchange").isin("NMS", "NGM", "NCM", "NASDAQ"), "NASDAQ")
+                .when((col("exchange") == "N/A") & col("ticker").endswith(".SA"), "B3")
+                .otherwise(col("exchange")),
+            )
+            .withColumn(
+                "currency",
+                when((col("currency") == "N/A") & col("ticker").endswith(".SA"), "BRL")
+                .when(col("currency") == "N/A", "USD")
+                .otherwise(col("currency")),
+            )
+            .filter(
+                (col("exchange") != "N/A")
+                & (col("currency") != "N/A")
+                & (col("short_name") != "N/A")
+                & (col("sector") != "N/A")
+            )
         )
 
         # Deduplication: Keeping only the most recent row per ticker
@@ -117,6 +132,15 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
             return
         # Incremental load (SCD Type 2)
         target_delta = DeltaTable.forPath(spark, str(SILVER_METADATA_DIR))
+
+        # Purge legacy invalid rows from target Delta table if present from older runs
+        target_delta.delete(
+            (col("exchange") == "N/A")
+            | (col("currency") == "N/A")
+            | (col("short_name") == "N/A")
+            | (col("sector") == "N/A")
+        )
+
         target_df = target_delta.toDF().filter(col("is_active") == 1)
 
         incoming_df = metadata_df_silver.alias("incoming")
