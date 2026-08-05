@@ -118,7 +118,8 @@ checks for v_companies_performance:
       fail query: |
         SELECT ticker, extraction_date
         FROM v_companies_performance
-        WHERE ebitda > 0
+        WHERE ebitda IS NOT NULL AND ebitda > 0
+          AND market_cap IS NOT NULL AND p_ebitda IS NOT NULL
           AND abs(p_ebitda - (market_cap / ebitda)) > 0.01
 
   # Net Debt / EBITDA Consistency (net_debt_ebitda must equal (total_debt - total_cash) / ebitda when ebitda is positive and not null)
@@ -127,7 +128,8 @@ checks for v_companies_performance:
       fail query: |
         SELECT ticker, extraction_date
         FROM v_companies_performance
-        WHERE ebitda > 0
+        WHERE ebitda IS NOT NULL AND ebitda > 0
+          AND total_debt IS NOT NULL AND total_cash IS NOT NULL AND net_debt_ebitda IS NOT NULL
           AND abs(net_debt_ebitda - (CAST(total_debt, 'Float64') - CAST(total_cash, 'Float64')) / ebitda) > 0.01
 
   # Assets Composition Consistency (equity_assets + liabilities_assets must equal 1.0 when roe is positive and not null, within small rounding margin)
@@ -137,6 +139,7 @@ checks for v_companies_performance:
         SELECT ticker, extraction_date
         FROM v_companies_performance
         WHERE roe IS NOT NULL AND roe != 0
+          AND equity_assets IS NOT NULL AND liabilities_assets IS NOT NULL
           AND abs(equity_assets + liabilities_assets - 1.0) > 0.01
 
 
