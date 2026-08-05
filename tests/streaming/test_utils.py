@@ -198,12 +198,10 @@ def test_find_version_introducing_file(tmp_path):
     log_dir.mkdir()
 
     # Create dummy commit files
-    # Commit 126
     c126 = log_dir / "00000000000000000126.json"
     with open(c126, "w", encoding="utf-8") as f:
         f.write('{"add":{"path":"part-00000-abc.parquet","size":123}}\n')
 
-    # Commit 127
     c127 = log_dir / "00000000000000000127.json"
     with open(c127, "w", encoding="utf-8") as f:
         f.write('{"add":{"path":"part-00000-corrupt.parquet","size":456}}\n')
