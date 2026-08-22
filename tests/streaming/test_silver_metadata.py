@@ -774,3 +774,61 @@ def test_silver_metrics_cleaning_and_casting(spark_session, tmp_path):
     assert df_silver_metrics.schema["trailing_pe"].dataType.scale == 4
 
     assert isinstance(df_silver_metrics.schema["market_cap"].dataType, LongType)
+
+
+def test_silver_metrics_nulls_implausible_trailing_eps(spark_session, tmp_path):
+    """Test that implausible trailing_eps values (e.g. bad upstream yfinance data) are nulled out."""
+    bronze_metadata_dir = tmp_path / "bronze_metadata"
+    bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_dir = tmp_path / "silver_metrics"
+    silver_metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    df_bronze = pd.DataFrame(
+        {
+            "ticker": ["TTEN3.SA", "AAPL"],
+            "dividend_yield": [0.0, 0.0051],
+            "trailing_pe": [None, 15.42],
+            "market_cap": [4969374000, 2600000000000],
+            "peg_ratio": [None, 1.5],
+            "price_to_book": [None, 2.5],
+            "enterprise_to_ebitda": [None, 12.3],
+            "enterprise_to_ebit": [None, 14.1],
+            "book_value": [None, 35.2],
+            "trailing_eps": [-105102.71, 6.5],
+            "price_to_sales": [None, 7.2],
+            "operating_margins": [None, 0.25],
+            "asset_turnover": [None, 0.8],
+            "shares_outstanding": [500440447, 15000000000],
+            "ebitda": [None, 100000000000],
+            "total_debt": [None, 120000000000],
+            "total_cash": [None, 80000000000],
+            "debt_to_equity": [None, 1.5],
+            "roa": [None, 0.12],
+            "roe": [None, 0.28],
+            "current_ratio": [None, 1.8],
+            "gross_margins": [None, 0.42],
+            "ebitda_margins": [None, 0.32],
+            "profit_margins": [None, 0.21],
+            "net_income_to_common": [583464000, 80000000000],
+            "extraction_date": ["2026-08-16", "2026-08-16"],
+            "ingestion_timestamp": ["2026-08-16 00:00:00", "2026-08-16 00:00:00"],
+        }
+    )
+
+    df_bronze_spark = spark_session.createDataFrame(df_bronze)
+    df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
+
+    with (
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_DIR", silver_metrics_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+        patch.object(spark_session, "stop"),
+    ):
+        run_silver_metrics("2026-08-16")
+
+    df_silver_metrics = spark_session.read.format("delta").load(str(silver_metrics_dir))
+    rows = {row.ticker: row for row in df_silver_metrics.collect()}
+
+    assert rows["TTEN3.SA"].trailing_eps is None
+    assert rows["AAPL"].trailing_eps == 6.5
