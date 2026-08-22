@@ -230,7 +230,7 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
             .withColumn("ticker", upper(trim(col("ticker").cast("string"))))
             .withColumn("dividend_yield", col("dividend_yield").cast("decimal(10,4)"))
             .withColumn("trailing_pe", col("trailing_pe").cast("decimal(10,4)"))
-            .withColumn("market_cap", col("market_cap").cast("long"))
+            .withColumn("market_cap", col("market_cap").try_cast("long"))
             .withColumn("peg_ratio", col("peg_ratio").cast("decimal(10,4)"))
             .withColumn("price_to_book", col("price_to_book").cast("decimal(10,4)"))
             .withColumn("enterprise_to_ebitda", col("enterprise_to_ebitda").cast("decimal(10,4)"))
@@ -239,17 +239,15 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
             .withColumn("trailing_eps", col("trailing_eps").cast("decimal(10,4)"))
             .withColumn(
                 "trailing_eps",
-                when(col("trailing_eps") <= IMPLAUSIBLE_TRAILING_EPS_FLOOR, lit(None)).otherwise(
-                    col("trailing_eps")
-                ),
+                when(col("trailing_eps") <= IMPLAUSIBLE_TRAILING_EPS_FLOOR, lit(None)).otherwise(col("trailing_eps")),
             )
             .withColumn("price_to_sales", col("price_to_sales").cast("decimal(10,4)"))
             .withColumn("operating_margins", col("operating_margins").cast("decimal(10,4)"))
             .withColumn("asset_turnover", col("asset_turnover").cast("decimal(10,4)"))
-            .withColumn("shares_outstanding", col("shares_outstanding").cast("long"))
-            .withColumn("ebitda", col("ebitda").cast("long"))
-            .withColumn("total_debt", col("total_debt").cast("long"))
-            .withColumn("total_cash", col("total_cash").cast("long"))
+            .withColumn("shares_outstanding", col("shares_outstanding").try_cast("long"))
+            .withColumn("ebitda", col("ebitda").try_cast("long"))
+            .withColumn("total_debt", col("total_debt").try_cast("long"))
+            .withColumn("total_cash", col("total_cash").try_cast("long"))
             .withColumn("debt_to_equity", col("debt_to_equity").cast("decimal(10,4)"))
             .withColumn("roa", col("roa").cast("decimal(10,4)"))
             .withColumn("roe", col("roe").cast("decimal(10,4)"))
@@ -257,7 +255,7 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
             .withColumn("gross_margins", col("gross_margins").cast("decimal(10,4)"))
             .withColumn("ebitda_margins", col("ebitda_margins").cast("decimal(10,4)"))
             .withColumn("profit_margins", col("profit_margins").cast("decimal(10,4)"))
-            .withColumn("net_income_to_common", col("net_income_to_common").cast("long"))
+            .withColumn("net_income_to_common", col("net_income_to_common").try_cast("long"))
             .withColumn("extraction_date", col("extraction_date").cast("date"))
             .withColumn("ingestion_timestamp", col("ingestion_timestamp").cast("timestamp"))
         ).select(
