@@ -11,6 +11,12 @@ from src.streaming.spark_session import create_spark_session
 from src.streaming.utils import check_and_heal_corrupt_data_file, read_delta_table, write_delta_table
 from src.utils.logger import logger
 
+# Mirrors the `min(trailing_eps) > -1000` sanity bound in the silver_metrics Soda
+# contract. yfinance occasionally returns implausible trailing_eps values for
+# illiquid tickers (inconsistent with the same row's net_income/shares_outstanding);
+# null them out here instead of letting one bad ticker fail the whole DQ scan.
+IMPLAUSIBLE_TRAILING_EPS_FLOOR = -1000
+
 
 def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
     """Clean, standardize, and deduplicate stock metadata from Bronze to Silver.
@@ -231,6 +237,12 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
             .withColumn("enterprise_to_ebit", col("enterprise_to_ebit").cast("decimal(10,4)"))
             .withColumn("book_value", col("book_value").cast("decimal(10,4)"))
             .withColumn("trailing_eps", col("trailing_eps").cast("decimal(10,4)"))
+            .withColumn(
+                "trailing_eps",
+                when(col("trailing_eps") <= IMPLAUSIBLE_TRAILING_EPS_FLOOR, lit(None)).otherwise(
+                    col("trailing_eps")
+                ),
+            )
             .withColumn("price_to_sales", col("price_to_sales").cast("decimal(10,4)"))
             .withColumn("operating_margins", col("operating_margins").cast("decimal(10,4)"))
             .withColumn("asset_turnover", col("asset_turnover").cast("decimal(10,4)"))
