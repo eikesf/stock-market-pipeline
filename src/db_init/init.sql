@@ -96,6 +96,7 @@ WITH latest_metrics AS (
     -- Get only the most recent fundamentals snapshot for each company
     SELECT *
     FROM stock_market.fact_company_metrics
+    ORDER BY extraction_date DESC
     LIMIT 1 BY ticker
 )
 SELECT
