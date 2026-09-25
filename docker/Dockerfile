@@ -2,11 +2,13 @@ FROM python:3.13-slim AS base
 
 WORKDIR /app
 
-# Install system dependencies required for Python packages and Java for Spark
+# Install system dependencies required for Python packages and Java for Spark.
+# jq is needed by the .claude/hooks scripts when Claude Code runs inside the container.
 RUN apt-get update && apt-get install -y \
     openjdk-21-jdk \
     curl \
     build-essential \
+    jq \
     && ln -s /usr/lib/jvm/java-21-openjdk-* /usr/lib/jvm/default-java \
     && rm -rf /var/lib/apt/lists/*
 

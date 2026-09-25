@@ -24,6 +24,7 @@ BRONZE_METADATA_DIR = DATA_DIR / "bronze" / METADATA_DOMAIN
 SILVER_PRICES_DIR = DATA_DIR / "silver" / PRICES_DOMAIN
 SILVER_METADATA_DIR = DATA_DIR / "silver" / METADATA_DOMAIN
 SILVER_METRICS_DIR = DATA_DIR / "silver" / "metrics"
+SILVER_METRICS_REJECTED_DIR = DATA_DIR / "silver" / "metrics_rejected"
 
 # Assure the directories exist before attempting to write into them
 for d in [
@@ -36,5 +37,6 @@ for d in [
     SILVER_PRICES_DIR,
     SILVER_METADATA_DIR,
     SILVER_METRICS_DIR,
+    SILVER_METRICS_REJECTED_DIR,
 ]:
     d.mkdir(parents=True, exist_ok=True)

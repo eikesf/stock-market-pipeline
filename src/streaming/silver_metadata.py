@@ -3,10 +3,17 @@ import sys
 from datetime import date
 
 from delta.tables import DeltaTable
-from pyspark.sql.functions import col, lit, row_number, trim, upper, when
+from pyspark.sql import DataFrame
+from pyspark.sql.column import Column
+from pyspark.sql.functions import col, current_timestamp, lit, row_number, trim, upper, when
 from pyspark.sql.window import Window
 
-from src.producer.config import BRONZE_METADATA_DIR, SILVER_METADATA_DIR, SILVER_METRICS_DIR
+from src.producer.config import (
+    BRONZE_METADATA_DIR,
+    SILVER_METADATA_DIR,
+    SILVER_METRICS_DIR,
+    SILVER_METRICS_REJECTED_DIR,
+)
 from src.streaming.spark_session import create_spark_session
 from src.streaming.utils import check_and_heal_corrupt_data_file, read_delta_table, write_delta_table
 from src.utils.logger import logger
@@ -16,6 +23,42 @@ from src.utils.logger import logger
 # illiquid tickers (inconsistent with the same row's net_income/shares_outstanding);
 # null them out here instead of letting one bad ticker fail the whole DQ scan.
 IMPLAUSIBLE_TRAILING_EPS_FLOOR = -1000
+
+# Mirrors the `min(price_to_sales) >= 0` sanity bound in the silver_metrics Soda
+# contract. yfinance's priceToSalesTrailing12Months can go negative for tickers
+# with negative trailing revenue; a P/S ratio is meaningless in that case, so
+# null it out rather than letting one bad ticker fail the whole DQ scan.
+IMPLAUSIBLE_PRICE_TO_SALES_FLOOR = 0
+
+# Mirrors the `min(operating_margins) > -200.0` sanity bound in the
+# silver_metrics Soda contract. yfinance's operatingMargins can blow out to
+# extreme negative values for micro-revenue tickers (operating loss divided by
+# near-zero revenue); null it out here instead of letting one bad ticker fail
+# the whole DQ scan.
+IMPLAUSIBLE_OPERATING_MARGINS_FLOOR = -200
+
+
+def _quarantine_outlier(df: DataFrame, metric_name: str, breach_condition: Column, floor_value: float) -> DataFrame:
+    """Capture rows where `metric_name` breaches its implausibility floor, for audit.
+
+    Args:
+        df: The metrics DataFrame, after casting but before the offending column is nulled out.
+        metric_name: Name of the metric column being checked.
+        breach_condition: Boolean column expression identifying rows to quarantine.
+        floor_value: The sanity floor breached by `metric_name`, recorded for context.
+
+    Returns:
+        A DataFrame matching the SILVER_METRICS_REJECTED_DIR schema, one row per quarantined value.
+    """
+    return df.filter(breach_condition).select(
+        "ticker",
+        "extraction_date",
+        lit(metric_name).alias("metric_name"),
+        col(metric_name).cast("decimal(18,4)").alias("raw_value"),
+        lit(floor_value).cast("decimal(18,4)").alias("floor_threshold"),
+        "ingestion_timestamp",
+        current_timestamp().alias("rejected_at"),
+    )
 
 
 def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
@@ -237,10 +280,6 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
             .withColumn("enterprise_to_ebit", col("enterprise_to_ebit").cast("decimal(10,4)"))
             .withColumn("book_value", col("book_value").cast("decimal(10,4)"))
             .withColumn("trailing_eps", col("trailing_eps").cast("decimal(10,4)"))
-            .withColumn(
-                "trailing_eps",
-                when(col("trailing_eps") <= IMPLAUSIBLE_TRAILING_EPS_FLOOR, lit(None)).otherwise(col("trailing_eps")),
-            )
             .withColumn("price_to_sales", col("price_to_sales").cast("decimal(10,4)"))
             .withColumn("operating_margins", col("operating_margins").cast("decimal(10,4)"))
             .withColumn("asset_turnover", col("asset_turnover").cast("decimal(10,4)"))
@@ -297,6 +336,50 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
             metrics_df_silver.withColumn("rn", row_number().over(window_spec)).filter(col("rn") == 1).drop("rn")
         )
 
+        rejected_df = (
+            _quarantine_outlier(
+                metrics_df_silver,
+                "trailing_eps",
+                col("trailing_eps") <= IMPLAUSIBLE_TRAILING_EPS_FLOOR,
+                IMPLAUSIBLE_TRAILING_EPS_FLOOR,
+            )
+            .unionByName(
+                _quarantine_outlier(
+                    metrics_df_silver,
+                    "price_to_sales",
+                    col("price_to_sales") < IMPLAUSIBLE_PRICE_TO_SALES_FLOOR,
+                    IMPLAUSIBLE_PRICE_TO_SALES_FLOOR,
+                )
+            )
+            .unionByName(
+                _quarantine_outlier(
+                    metrics_df_silver,
+                    "operating_margins",
+                    col("operating_margins") <= IMPLAUSIBLE_OPERATING_MARGINS_FLOOR,
+                    IMPLAUSIBLE_OPERATING_MARGINS_FLOOR,
+                )
+            )
+        )
+
+        metrics_df_silver = (
+            metrics_df_silver.withColumn(
+                "trailing_eps",
+                when(col("trailing_eps") <= IMPLAUSIBLE_TRAILING_EPS_FLOOR, lit(None)).otherwise(col("trailing_eps")),
+            )
+            .withColumn(
+                "price_to_sales",
+                when(col("price_to_sales") < IMPLAUSIBLE_PRICE_TO_SALES_FLOOR, lit(None)).otherwise(
+                    col("price_to_sales")
+                ),
+            )
+            .withColumn(
+                "operating_margins",
+                when(col("operating_margins") <= IMPLAUSIBLE_OPERATING_MARGINS_FLOOR, lit(None)).otherwise(
+                    col("operating_margins")
+                ),
+            )
+        )
+
         is_cold_start = not (SILVER_METRICS_DIR / "_delta_log").exists()
 
         if is_cold_start:
@@ -305,6 +388,13 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
             target_delta = DeltaTable.forPath(spark, str(SILVER_METRICS_DIR))
             target_delta.delete(col("extraction_date") == lit(exec_date).cast("date"))
             write_delta_table(metrics_df_silver, SILVER_METRICS_DIR, mode="append")
+
+        if not (SILVER_METRICS_REJECTED_DIR / "_delta_log").exists():
+            write_delta_table(rejected_df, SILVER_METRICS_REJECTED_DIR, mode="overwrite")
+        else:
+            rejected_delta = DeltaTable.forPath(spark, str(SILVER_METRICS_REJECTED_DIR))
+            rejected_delta.delete(col("extraction_date") == lit(exec_date).cast("date"))
+            write_delta_table(rejected_df, SILVER_METRICS_REJECTED_DIR, mode="append")
 
         logger.success("Bronze to Silver (Metrics) pipeline completed successfully")
         return

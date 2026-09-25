@@ -3,7 +3,37 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from src.producer.metadata_generator import run_metadata_generator
+from src.producer.metadata_generator import clean_int, run_metadata_generator
+
+
+class TestCleanInt:
+    def test_clean_int_passes_through_int(self):
+        """Test that a plain int value is returned unchanged."""
+        assert clean_int(2600000000000) == 2600000000000
+
+    def test_clean_int_truncates_float(self):
+        """Test that a plain float value is truncated to an int."""
+        assert clean_int(4969374000.0) == 4969374000
+
+    def test_clean_int_nan_float_returns_default_instead_of_raising(self):
+        """Test that a genuine NaN float (e.g. from yfinance) degrades to the default instead of raising.
+
+        Regression test: `int(float("nan"))` raises `ValueError`, which previously propagated
+        out of `clean_int` uncaught, dropping the entire ticker's row for the day (caught only
+        by the broad per-ticker except in run_metadata_generator's loop) instead of nulling out
+        just the offending field.
+        """
+        assert clean_int(float("nan")) is None
+        assert clean_int(float("nan"), default=0) == 0
+
+    def test_clean_int_none_returns_default(self):
+        """Test that None returns the provided default."""
+        assert clean_int(None) is None
+        assert clean_int(None, default=0) == 0
+
+    def test_clean_int_nan_string_returns_default(self):
+        """Test that a NaN-like string still returns the default."""
+        assert clean_int("NaN") is None
 
 
 @patch("src.producer.metadata_generator.get_all_tickers")
