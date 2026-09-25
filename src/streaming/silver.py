@@ -5,19 +5,26 @@ from datetime import date
 from pyspark.sql.functions import col, row_number, trim, upper, when
 from pyspark.sql.window import Window
 
-from src.producer.config import BRONZE_PRICES_DIR, SILVER_PRICES_DIR
+from src.producer.config import BRONZE_PRICES_DIR, SILVER_PRICES_DIR, SILVER_PRICES_REJECTED_DIR
+from src.streaming.quality_rules import (
+    PRICES_REQUIRED_COLUMNS,
+    classify,
+    prices_rules,
+    require_columns,
+    split_valid_rejected,
+)
 from src.streaming.spark_session import create_spark_session
 from src.streaming.utils import check_and_heal_corrupt_data_file, read_delta_table, write_delta_table
 from src.utils.logger import logger
 
 
 def run_silver(exec_date: str, raise_on_error: bool = False) -> None:
-    """Clean and deduplicate stock prices from Bronze to Silver Layer using Spark.
+    """Clean, validate and deduplicate stock prices from Bronze to Silver Layer using Spark.
 
-    Reads from the Bronze prices Delta table, drops records with missing critical
-    fields, casts prices/volumes to their target database types (Decimals and Longs),
-    deduplicates per (ticker, date) keeping the latest entry, and writes the
-    cleaned dataset to the Silver prices Delta table.
+    Reads from the Bronze prices Delta table, casts prices/volumes to their target database
+    types (Decimals and Longs), deduplicates per (ticker, date) keeping the latest entry, then
+    splits the batch: rows breaching a quality rule are written whole to the Silver prices
+    quarantine table and kept out of the Silver prices table entirely.
 
     Args:
         exec_date: Execution date in YYYY-MM-DD format.
@@ -25,6 +32,7 @@ def run_silver(exec_date: str, raise_on_error: bool = False) -> None:
 
     Raises:
         SystemExit: If the date format is invalid or processing fails.
+        RequiredColumnMissingError: If any row is missing ticker or date.
     """
     try:
         date.fromisoformat(exec_date)
@@ -41,14 +49,16 @@ def run_silver(exec_date: str, raise_on_error: bool = False) -> None:
         # Reading bronze stock data
         stock_df_bronze = read_delta_table(spark, BRONZE_PRICES_DIR)
 
-        # Clean data: drop nulls in critical columns and cast columns to appropriate data types
+        # Cast the identity columns first so the essential-column check can run before anything else
+        stock_df_silver = stock_df_bronze.withColumn("date", col("date").cast("date")).withColumn(
+            "ticker", upper(trim(col("ticker").cast("string")))
+        )
+
+        require_columns(stock_df_silver, PRICES_REQUIRED_COLUMNS, domain="prices")
+
+        # Cast remaining columns to their target database types
         stock_df_silver = (
-            stock_df_bronze.na.drop(
-                subset=["open", "close", "high", "low", "volume", "ticker", "date", "ingestion_timestamp", "adj_close"]
-            )
-            .withColumn("date", col("date").cast("date"))
-            .withColumn("ticker", upper(trim(col("ticker").cast("string"))))
-            .withColumn("open", col("open").cast("decimal(10,2)"))
+            stock_df_silver.withColumn("open", col("open").cast("decimal(10,2)"))
             .withColumn("high", col("high").cast("decimal(10,2)"))
             .withColumn("low", col("low").cast("decimal(10,2)"))
             .withColumn("close", col("close").cast("decimal(10,2)"))
@@ -71,8 +81,24 @@ def run_silver(exec_date: str, raise_on_error: bool = False) -> None:
             stock_df_silver.withColumn("rn", row_number().over(window_spec)).filter(col("rn") == 1).drop("rn")
         )
 
-        # Writing data to silver delta table
+        # Drop non-trading days before validating. yfinance emits a row per calendar date per
+        # ticker, with every OHLC value null when no session took place (market holiday, or a date
+        # before the ticker listed). That is the expected shape of the source, not a quality
+        # problem, so quarantining it would bury real defects under tens of thousands of rows.
+        no_session = col("open").isNull() & col("high").isNull() & col("low").isNull() & col("close").isNull()
+        before_count = stock_df_silver.count()
+        stock_df_silver = stock_df_silver.filter(~no_session)
+        skipped = before_count - stock_df_silver.count()
+        if skipped:
+            logger.info(f"Skipped {skipped} non-trading-day rows with no OHLC data.")
+
+        # Split clean rows from rows breaching a quality rule; only clean rows reach Silver (and Gold)
+        classified_df = classify(stock_df_silver, prices_rules())
+        stock_df_silver, rejected_df = split_valid_rejected(classified_df, pipeline_exec_date=exec_date)
+
+        # Writing data to silver delta tables (prices is a full refresh on every run)
         write_delta_table(stock_df_silver, SILVER_PRICES_DIR, mode="overwrite")
+        write_delta_table(rejected_df, SILVER_PRICES_REJECTED_DIR, mode="overwrite")
 
         logger.success("Bronze to Silver pipeline completed successfully.")
 
