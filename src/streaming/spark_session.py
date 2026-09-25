@@ -25,11 +25,16 @@ def create_spark_session(raise_on_error: bool = False) -> SparkSession:
     try:
         root_dir = str(Path(__file__).resolve().parent.parent.parent)
 
+        # fs.file.impl is deliberately left at Hadoop's default (LocalFileSystem, a
+        # ChecksumFileSystem): it writes a .crc sidecar per file and verifies it on read, so a
+        # silently damaged parquet file fails loudly at the next read instead of weeks later.
+        # RawLocalFileSystem skips that verification, which is how corrupt Silver files previously
+        # went unnoticed for three weeks. The Docker Desktop bind mount used on macOS does not
+        # guarantee durable writeback, so this check is the cheapest corruption detector available.
         builder = (
             SparkSession.builder.appName("Stock Market Pipeline")
             .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
             .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-            .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.RawLocalFileSystem")
             .config("spark.executorEnv.PYTHONPATH", root_dir)
         )
 
