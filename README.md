@@ -220,7 +220,7 @@ stock_market_pipeline/
 ├── data/                    # Shared data volume (created at runtime)
 │   ├── bronze/              # Delta Bronze layer (prices/ & metadata/)
 │   ├── landing/             # Raw extractions (prices/ & metadata/)
-│   └── silver/              # Delta Silver layer (prices/, metadata/, metrics/ + *_rejected/ quarantine tables)
+│   └── silver/              # Delta Silver layer (prices/, prices_rejected/, metadata/, metadata_rejected/, metrics/, metrics_rejected/)
 ├── docker/
 │   ├── Dockerfile           # Python 3.13 + Java 21 image
 │   └── docker-compose.yml   # Full multi-service stack (Airflow, ClickHouse, Python)
