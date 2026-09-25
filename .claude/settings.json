@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "agent",
+            "if": "Bash(gh pr create*)",
+            "model": "claude-sonnet-5",
+            "timeout": 180,
+            "statusMessage": "Checking README.md is up to date before opening the PR...",
+            "prompt": "A `gh pr create` command is about to run in this repo (stock_market_pipeline). Before allowing it, enforce the README-before-PR rule: read the root README.md in full, then compare it against the diff for this branch (find the merge base with develop via `git merge-base develop HEAD`, then `git diff <merge-base>...HEAD`). If the diff adds, removes, or changes commands, config/env vars, architecture/layers, or behavior that README.md documents, README.md must already be updated to match in this same diff (check whether `git diff <merge-base>...HEAD -- README.md` is non-empty and actually covers the relevant change). If README.md is stale or structurally inconsistent with the diff, BLOCK this tool call and explain precisely which README section(s) need updating and why. If README.md already reflects the diff, or the diff has no user-facing/behavioral impact requiring README changes, ALLOW it."
+          }
+        ]
+      }
+    ]
+  }
+}
