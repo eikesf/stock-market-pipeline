@@ -1,64 +1,65 @@
 import argparse
 import sys
 from datetime import date
+from pathlib import Path
 
 from delta.tables import DeltaTable
-from pyspark.sql import DataFrame
-from pyspark.sql.column import Column
-from pyspark.sql.functions import col, current_timestamp, lit, row_number, trim, upper, when
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.functions import col, lit, row_number, trim, upper, when
 from pyspark.sql.window import Window
 
 from src.producer.config import (
     BRONZE_METADATA_DIR,
     SILVER_METADATA_DIR,
+    SILVER_METADATA_REJECTED_DIR,
     SILVER_METRICS_DIR,
     SILVER_METRICS_REJECTED_DIR,
+)
+from src.streaming.quality_rules import (
+    METADATA_REQUIRED_COLUMNS,
+    METRICS_REQUIRED_COLUMNS,
+    QualityRule,
+    classify,
+    metadata_rules,
+    metrics_rules,
+    require_columns,
+    split_valid_rejected,
 )
 from src.streaming.spark_session import create_spark_session
 from src.streaming.utils import check_and_heal_corrupt_data_file, read_delta_table, write_delta_table
 from src.utils.logger import logger
 
-# Mirrors the `min(trailing_eps) > -1000` sanity bound in the silver_metrics Soda
-# contract. yfinance occasionally returns implausible trailing_eps values for
-# illiquid tickers (inconsistent with the same row's net_income/shares_outstanding);
-# null them out here instead of letting one bad ticker fail the whole DQ scan.
-IMPLAUSIBLE_TRAILING_EPS_FLOOR = -1000
 
-# Mirrors the `min(price_to_sales) >= 0` sanity bound in the silver_metrics Soda
-# contract. yfinance's priceToSalesTrailing12Months can go negative for tickers
-# with negative trailing revenue; a P/S ratio is meaningless in that case, so
-# null it out rather than letting one bad ticker fail the whole DQ scan.
-IMPLAUSIBLE_PRICE_TO_SALES_FLOOR = 0
-
-# Mirrors the `min(operating_margins) > -200.0` sanity bound in the
-# silver_metrics Soda contract. yfinance's operatingMargins can blow out to
-# extreme negative values for micro-revenue tickers (operating loss divided by
-# near-zero revenue); null it out here instead of letting one bad ticker fail
-# the whole DQ scan.
-IMPLAUSIBLE_OPERATING_MARGINS_FLOOR = -200
-
-
-def _quarantine_outlier(df: DataFrame, metric_name: str, breach_condition: Column, floor_value: float) -> DataFrame:
-    """Capture rows where `metric_name` breaches its implausibility floor, for audit.
+def _write_rejected(spark_df: DataFrame, target_dir: Path, exec_date: str, spark: SparkSession) -> None:
+    """Write quarantined rows, replacing whatever the same run wrote previously.
 
     Args:
-        df: The metrics DataFrame, after casting but before the offending column is nulled out.
-        metric_name: Name of the metric column being checked.
-        breach_condition: Boolean column expression identifying rows to quarantine.
-        floor_value: The sanity floor breached by `metric_name`, recorded for context.
+        spark_df: Quarantined rows produced by `split_valid_rejected`.
+        target_dir: Quarantine Delta table path.
+        exec_date: Execution date, used to scope the idempotent replace.
+        spark: The active Spark session.
+    """
+    if not (target_dir / "_delta_log").exists():
+        write_delta_table(spark_df, target_dir, mode="overwrite")
+        return
+
+    rejected_delta = DeltaTable.forPath(spark, str(target_dir))
+    rejected_delta.delete(col("pipeline_exec_date") == lit(exec_date).cast("date"))
+    write_delta_table(spark_df, target_dir, mode="append")
+
+
+def _split_by_quality(df: DataFrame, rules: list[QualityRule], exec_date: str) -> tuple[DataFrame, DataFrame]:
+    """Classify a Silver batch and split it into its valid and quarantined halves.
+
+    Args:
+        df: Cleaned, deduplicated Silver batch.
+        rules: Quality rules for the domain.
+        exec_date: Execution date recorded on quarantined rows.
 
     Returns:
-        A DataFrame matching the SILVER_METRICS_REJECTED_DIR schema, one row per quarantined value.
+        A `(valid_df, rejected_df)` tuple.
     """
-    return df.filter(breach_condition).select(
-        "ticker",
-        "extraction_date",
-        lit(metric_name).alias("metric_name"),
-        col(metric_name).cast("decimal(18,4)").alias("raw_value"),
-        lit(floor_value).cast("decimal(18,4)").alias("floor_threshold"),
-        "ingestion_timestamp",
-        current_timestamp().alias("rejected_at"),
-    )
+    return split_valid_rejected(classify(df, rules), pipeline_exec_date=exec_date)
 
 
 def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
@@ -66,8 +67,11 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
 
     This function reads raw stock metadata from the Bronze layer, standardizes
     string columns, adjusts exchange codes (e.g., normalizes 'SAO' to 'B3'),
-    implements SCD Type 2 logic to track changing attributes without duplicating
-    records unnecessarily, and writes the results to the Silver metadata Delta table.
+    quarantines rows breaching a quality rule, then implements SCD Type 2 logic over the
+    remaining rows to track changing attributes without duplicating records unnecessarily.
+
+    Quarantining happens before the SCD Type 2 diff so a ticker with bad incoming data keeps its
+    existing active record instead of having it closed out.
 
     Args:
         exec_date: Execution date in YYYY-MM-DD format.
@@ -75,6 +79,7 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
 
     Raises:
         SystemExit: If the date format is invalid or processing fails.
+        RequiredColumnMissingError: If any row is missing ticker or extraction_date.
     """
     try:
         date.fromisoformat(exec_date)
@@ -92,10 +97,15 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
         metadata_df_bronze = read_delta_table(spark, BRONZE_METADATA_DIR)
 
         # Cleaning and organizing the metadata dataframe
+        # Cast the identity columns first so the essential-column check can run before anything else
+        metadata_df_bronze = metadata_df_bronze.withColumn(
+            "ticker", upper(trim(col("ticker").cast("string")))
+        ).withColumn("extraction_date", col("extraction_date").cast("date"))
+
+        require_columns(metadata_df_bronze, METADATA_REQUIRED_COLUMNS, domain="metadata")
+
         metadata_df_silver = (
-            metadata_df_bronze.na.drop(subset=["ticker", "sector", "exchange", "short_name"])
-            .withColumn("ticker", upper(trim(col("ticker").cast("string"))))
-            .withColumn("short_name", trim(col("short_name").cast("string")))
+            metadata_df_bronze.withColumn("short_name", trim(col("short_name").cast("string")))
             .withColumn("sector", trim(col("sector").cast("string")))
             .withColumn("industry", trim(col("industry").cast("string")))
             .withColumn("country", trim(col("country").cast("string")))
@@ -103,7 +113,6 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
             .withColumn("full_time_employees", col("full_time_employees").cast("integer"))
             .withColumn("exchange", upper(trim(col("exchange").cast("string"))))
             .withColumn("currency", trim(col("currency").cast("string")))
-            .withColumn("extraction_date", col("extraction_date").cast("date"))
             .withColumn("ingestion_timestamp", col("ingestion_timestamp").cast("timestamp"))
             .select(
                 "ticker",
@@ -121,37 +130,33 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
         )
 
         # Adjusting exchange and currency names to correspond to standard patterns
-        metadata_df_silver = (
-            metadata_df_silver.withColumn(
-                "exchange",
-                when(col("exchange") == "SAO", "B3")
-                .when(col("exchange") == "NYQ", "NYSE")
-                .when(col("exchange").isin("NMS", "NGM", "NCM", "NASDAQ"), "NASDAQ")
-                .when((col("exchange") == "N/A") & col("ticker").endswith(".SA"), "B3")
-                .otherwise(col("exchange")),
-            )
-            .withColumn(
-                "currency",
-                when((col("currency") == "N/A") & col("ticker").endswith(".SA"), "BRL")
-                .when(col("currency") == "N/A", "USD")
-                .otherwise(col("currency")),
-            )
-            .filter(
-                (col("exchange") != "N/A")
-                & (col("currency") != "N/A")
-                & (col("short_name") != "N/A")
-                & (col("sector") != "N/A")
-            )
+        metadata_df_silver = metadata_df_silver.withColumn(
+            "exchange",
+            when(col("exchange") == "SAO", "B3")
+            .when(col("exchange") == "NYQ", "NYSE")
+            .when(col("exchange").isin("NMS", "NGM", "NCM", "NASDAQ"), "NASDAQ")
+            .when((col("exchange") == "N/A") & col("ticker").endswith(".SA"), "B3")
+            .otherwise(col("exchange")),
+        ).withColumn(
+            "currency",
+            when((col("currency") == "N/A") & col("ticker").endswith(".SA"), "BRL")
+            .when(col("currency") == "N/A", "USD")
+            .otherwise(col("currency")),
         )
 
         # Deduplication: Keeping only the most recent row per ticker
         window_spec = Window.partitionBy("ticker").orderBy(col("ingestion_timestamp").desc())
 
         metadata_df_silver = (
-            metadata_df_silver.withColumn("rn", row_number().over(window_spec))
-            .filter(col("rn") == 1)
-            .drop("rn")
-            .withColumn("start_date", col("extraction_date"))
+            metadata_df_silver.withColumn("rn", row_number().over(window_spec)).filter(col("rn") == 1).drop("rn")
+        )
+
+        # Split before the SCD Type 2 diff below: a quarantined ticker must not participate in the
+        # merge, or bad incoming data would close out its previously good active row.
+        metadata_df_silver, rejected_df = _split_by_quality(metadata_df_silver, metadata_rules(), exec_date)
+
+        metadata_df_silver = (
+            metadata_df_silver.withColumn("start_date", col("extraction_date"))
             .withColumn("end_date", lit(None).cast("date"))
             .withColumn("is_active", lit(1).cast("integer"))
             .select(
@@ -177,12 +182,14 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
         if is_cold_start:
             # First load
             write_delta_table(metadata_df_silver, SILVER_METADATA_DIR, mode="overwrite")
+            _write_rejected(rejected_df, SILVER_METADATA_REJECTED_DIR, exec_date, spark)
             logger.success("Bronze to Silver (Metadata) cold-start pipeline completed successfully.")
             return
         # Incremental load (SCD Type 2)
         target_delta = DeltaTable.forPath(spark, str(SILVER_METADATA_DIR))
 
-        # Purge legacy invalid rows from target Delta table if present from older runs
+        # Legacy cleanup for rows committed before placeholder values were quarantined; a no-op now
+        # that such rows never reach changed_or_new.
         target_delta.delete(
             (col("exchange") == "N/A")
             | (col("currency") == "N/A")
@@ -216,6 +223,7 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
         ).whenMatchedUpdate(set={"is_active": lit(0), "end_date": col("source.extraction_date")}).execute()
 
         write_delta_table(changed_or_new, SILVER_METADATA_DIR, mode="append")
+        _write_rejected(rejected_df, SILVER_METADATA_REJECTED_DIR, exec_date, spark)
         logger.success("Bronze to Silver (Metadata) incremental SCD Type 2 pipeline completed successfully")
         return
 
@@ -242,8 +250,9 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
     Reads raw stock metadata (which contains financial indicators) from the
     Bronze layer, casts all metrics to their appropriate data types (Decimal for ratios,
     Long for large currency values/counts), filters for the specified execution date,
-    keeps only the most recent extraction per ticker for that date, and saves the
-    resulting records into the Silver metrics Delta table.
+    keeps only the most recent extraction per ticker for that date, then splits the batch:
+    rows breaching a quality rule are written whole to the Silver metrics quarantine table and
+    kept out of the Silver metrics table entirely.
 
     Args:
         exec_date: Execution date in YYYY-MM-DD format.
@@ -251,6 +260,7 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
 
     Raises:
         SystemExit: If the date format is invalid or processing fails.
+        RequiredColumnMissingError: If any row is missing ticker or extraction_date.
     """
     try:
         date.fromisoformat(exec_date)
@@ -267,11 +277,16 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
         # Reading bronze metadata
         metadata_df_bronze = read_delta_table(spark, BRONZE_METADATA_DIR)
 
+        # Cast the identity columns first so the essential-column check can run before anything else
+        metadata_df_bronze = metadata_df_bronze.withColumn(
+            "ticker", upper(trim(col("ticker").cast("string")))
+        ).withColumn("extraction_date", col("extraction_date").cast("date"))
+
+        require_columns(metadata_df_bronze, METRICS_REQUIRED_COLUMNS, domain="metrics")
+
         # Cleaning and organizing the metrics dataframe
         metrics_df_silver = (
-            metadata_df_bronze.na.drop(subset=["ticker", "extraction_date"])
-            .withColumn("ticker", upper(trim(col("ticker").cast("string"))))
-            .withColumn("dividend_yield", col("dividend_yield").cast("decimal(10,4)"))
+            metadata_df_bronze.withColumn("dividend_yield", col("dividend_yield").cast("decimal(10,4)"))
             .withColumn("trailing_pe", col("trailing_pe").cast("decimal(10,4)"))
             .withColumn("market_cap", col("market_cap").try_cast("long"))
             .withColumn("peg_ratio", col("peg_ratio").cast("decimal(10,4)"))
@@ -295,7 +310,6 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
             .withColumn("ebitda_margins", col("ebitda_margins").cast("decimal(10,4)"))
             .withColumn("profit_margins", col("profit_margins").cast("decimal(10,4)"))
             .withColumn("net_income_to_common", col("net_income_to_common").try_cast("long"))
-            .withColumn("extraction_date", col("extraction_date").cast("date"))
             .withColumn("ingestion_timestamp", col("ingestion_timestamp").cast("timestamp"))
         ).select(
             "ticker",
@@ -336,49 +350,8 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
             metrics_df_silver.withColumn("rn", row_number().over(window_spec)).filter(col("rn") == 1).drop("rn")
         )
 
-        rejected_df = (
-            _quarantine_outlier(
-                metrics_df_silver,
-                "trailing_eps",
-                col("trailing_eps") <= IMPLAUSIBLE_TRAILING_EPS_FLOOR,
-                IMPLAUSIBLE_TRAILING_EPS_FLOOR,
-            )
-            .unionByName(
-                _quarantine_outlier(
-                    metrics_df_silver,
-                    "price_to_sales",
-                    col("price_to_sales") < IMPLAUSIBLE_PRICE_TO_SALES_FLOOR,
-                    IMPLAUSIBLE_PRICE_TO_SALES_FLOOR,
-                )
-            )
-            .unionByName(
-                _quarantine_outlier(
-                    metrics_df_silver,
-                    "operating_margins",
-                    col("operating_margins") <= IMPLAUSIBLE_OPERATING_MARGINS_FLOOR,
-                    IMPLAUSIBLE_OPERATING_MARGINS_FLOOR,
-                )
-            )
-        )
-
-        metrics_df_silver = (
-            metrics_df_silver.withColumn(
-                "trailing_eps",
-                when(col("trailing_eps") <= IMPLAUSIBLE_TRAILING_EPS_FLOOR, lit(None)).otherwise(col("trailing_eps")),
-            )
-            .withColumn(
-                "price_to_sales",
-                when(col("price_to_sales") < IMPLAUSIBLE_PRICE_TO_SALES_FLOOR, lit(None)).otherwise(
-                    col("price_to_sales")
-                ),
-            )
-            .withColumn(
-                "operating_margins",
-                when(col("operating_margins") <= IMPLAUSIBLE_OPERATING_MARGINS_FLOOR, lit(None)).otherwise(
-                    col("operating_margins")
-                ),
-            )
-        )
+        # Split clean rows from rows breaching a quality rule; only clean rows reach Silver (and Gold)
+        metrics_df_silver, rejected_df = _split_by_quality(metrics_df_silver, metrics_rules(), exec_date)
 
         is_cold_start = not (SILVER_METRICS_DIR / "_delta_log").exists()
 
@@ -389,12 +362,7 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
             target_delta.delete(col("extraction_date") == lit(exec_date).cast("date"))
             write_delta_table(metrics_df_silver, SILVER_METRICS_DIR, mode="append")
 
-        if not (SILVER_METRICS_REJECTED_DIR / "_delta_log").exists():
-            write_delta_table(rejected_df, SILVER_METRICS_REJECTED_DIR, mode="overwrite")
-        else:
-            rejected_delta = DeltaTable.forPath(spark, str(SILVER_METRICS_REJECTED_DIR))
-            rejected_delta.delete(col("extraction_date") == lit(exec_date).cast("date"))
-            write_delta_table(rejected_df, SILVER_METRICS_REJECTED_DIR, mode="append")
+        _write_rejected(rejected_df, SILVER_METRICS_REJECTED_DIR, exec_date, spark)
 
         logger.success("Bronze to Silver (Metrics) pipeline completed successfully")
         return

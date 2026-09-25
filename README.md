@@ -220,7 +220,7 @@ stock_market_pipeline/
 ├── data/                    # Shared data volume (created at runtime)
 │   ├── bronze/              # Delta Bronze layer (prices/ & metadata/)
 │   ├── landing/             # Raw extractions (prices/ & metadata/)
-│   └── silver/              # Delta Silver layer (prices/, metadata/, metrics/, metrics_rejected/)
+│   └── silver/              # Delta Silver layer (prices/, metadata/, metrics/ + *_rejected/ quarantine tables)
 ├── docker/
 │   ├── Dockerfile           # Python 3.13 + Java 21 image
 │   └── docker-compose.yml   # Full multi-service stack (Airflow, ClickHouse, Python)
@@ -348,7 +348,11 @@ The CI pipeline runs both checks automatically on every push and pull request.
 Automated data quality contracts are integrated in both the **Silver** and **Gold** layers of the Medallion architecture using **Soda Core** and **SodaCL**.
 
 *   **Silver Layer Validation**: Ensures structural, schema, and volume integrity of our local Delta tables (`silver_prices`, `silver_metadata`, `silver_metrics`) using Spark sessions. Delta tables are loaded dynamically as temporary views in PySpark before running the scans.
-*   **Outlier Quarantine (pre-scan sanitization)**: Before the Silver metrics Soda scan runs, implausible `trailing_eps`, `price_to_sales`, and `operating_margins` values (e.g. a negative price-to-sales ratio) are nulled out in `silver_metrics` and captured with their raw value in a separate `silver_metrics_rejected` Delta table for audit, instead of letting one bad ticker fail the entire batch's quality scan.
+*   **Row-level Quarantine (pre-write gate)**: Each Silver pipeline validates every row *before* writing it, so bad data never reaches the Silver table or, consequently, ClickHouse. The rules live in `src/streaming/quality_rules.py` as Python constants mirroring the bounds in the matching `soda/contracts/silver_*.yml` contract:
+    *   **Essential columns** (`ticker` plus the domain's date column) are never quarantined — a null there fails the whole run loudly, since a row with no identity can't be audited or reprocessed.
+    *   **Any other rule violation** (value out of range, malformed ticker/ISIN, missing value in a column the Gold schema declares non-Nullable, or structurally impossible OHLC on a traded day) removes the **entire row** from the valid table and writes it — whole, with every reason it breached — to the domain's quarantine table: `silver_prices_rejected`, `silver_metadata_rejected`, or `silver_metrics_rejected`. Each quarantined row carries `pipeline_exec_date`, `rejected_at`, and a `rejection_reasons` array.
+    *   For the metadata SCD Type 2 flow, quarantining happens *before* the history diff, so a ticker with a bad extraction keeps its existing active record instead of having it closed out.
+    *   Because these rules mirror the Soda bounds, the Soda contracts (which still run after the write) now act as an independent backstop that should rarely fire, rather than the primary gate.
 *   **Gold Layer Validation**: Ensures that OLAP analytical tables and views loaded in the ClickHouse database (`fact_prices`, `dim_companies`, `fact_company_metrics`, `v_companies_performance`, `v_fact_prices_converted`) conform to the business expectations using ClickHouse's MySQL wire protocol (port `9004`).
 
 #### Contract Schema files:
