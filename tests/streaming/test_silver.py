@@ -439,3 +439,49 @@ def test_silver_prices_quarantines_invalid_ticker_format(spark_session, tmp_path
     rejected = df_rejected.collect()
     assert len(rejected) == 1
     assert any("ticker does not match required format" in reason for reason in rejected[0].rejection_reasons)
+
+
+def test_silver_prices_skips_non_trading_days_without_quarantining(spark_session, tmp_path):
+    """Test that a row with no OHLC data at all is skipped rather than quarantined.
+
+    yfinance emits a row per calendar date per ticker, with every OHLC value null when no session
+    took place. Quarantining those would bury real defects under tens of thousands of rows.
+    """
+    rows = [
+        _prices_bronze_row("AAPL"),
+        _prices_bronze_row(
+            "HOLIDAY",
+            open=None,
+            high=None,
+            low=None,
+            close=None,
+            adj_close=None,
+            volume=0,
+            dividends=None,
+            stock_splits=None,
+        ),
+    ]
+
+    df_silver, df_rejected = _run_silver_prices(spark_session, tmp_path, rows)
+
+    assert [row.ticker for row in df_silver.collect()] == ["AAPL"]
+    assert df_rejected.count() == 0
+
+
+def test_silver_prices_quarantines_partial_nulls_on_a_traded_row(spark_session, tmp_path):
+    """Test that a row with only *some* OHLC values missing is still quarantined.
+
+    Unlike a non-trading day, a row that traded but lost a required value is a real defect and
+    must not reach the Gold schema, which declares those columns non-Nullable.
+    """
+    rows = [_prices_bronze_row("AAPL"), _prices_bronze_row("PARTIAL", open=None, close=None)]
+
+    df_silver, df_rejected = _run_silver_prices(spark_session, tmp_path, rows)
+
+    assert [row.ticker for row in df_silver.collect()] == ["AAPL"]
+    rejected = df_rejected.collect()
+    assert len(rejected) == 1
+    assert rejected[0].ticker == "PARTIAL"
+    reasons = rejected[0].rejection_reasons
+    assert any("open is missing" in reason for reason in reasons)
+    assert any("close is missing" in reason for reason in reasons)

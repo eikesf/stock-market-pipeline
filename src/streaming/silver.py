@@ -81,6 +81,17 @@ def run_silver(exec_date: str, raise_on_error: bool = False) -> None:
             stock_df_silver.withColumn("rn", row_number().over(window_spec)).filter(col("rn") == 1).drop("rn")
         )
 
+        # Drop non-trading days before validating. yfinance emits a row per calendar date per
+        # ticker, with every OHLC value null when no session took place (market holiday, or a date
+        # before the ticker listed). That is the expected shape of the source, not a quality
+        # problem, so quarantining it would bury real defects under tens of thousands of rows.
+        no_session = col("open").isNull() & col("high").isNull() & col("low").isNull() & col("close").isNull()
+        before_count = stock_df_silver.count()
+        stock_df_silver = stock_df_silver.filter(~no_session)
+        skipped = before_count - stock_df_silver.count()
+        if skipped:
+            logger.info(f"Skipped {skipped} non-trading-day rows with no OHLC data.")
+
         # Split clean rows from rows breaching a quality rule; only clean rows reach Silver (and Gold)
         classified_df = classify(stock_df_silver, prices_rules())
         stock_df_silver, rejected_df = split_valid_rejected(classified_df, pipeline_exec_date=exec_date)
