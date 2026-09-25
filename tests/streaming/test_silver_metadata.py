@@ -780,8 +780,8 @@ def test_silver_metrics_cleaning_and_casting(spark_session, tmp_path):
     assert isinstance(df_silver_metrics.schema["market_cap"].dataType, LongType)
 
 
-def test_silver_metrics_nulls_implausible_trailing_eps(spark_session, tmp_path):
-    """Test that implausible trailing_eps values (e.g. bad upstream yfinance data) are nulled out."""
+def test_silver_metrics_quarantines_row_with_implausible_trailing_eps(spark_session, tmp_path):
+    """Test that a row with implausible trailing_eps is moved whole out of silver_metrics into the rejected table."""
     bronze_metadata_dir = tmp_path / "bronze_metadata"
     bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
 
@@ -838,20 +838,22 @@ def test_silver_metrics_nulls_implausible_trailing_eps(spark_session, tmp_path):
     df_silver_metrics = spark_session.read.format("delta").load(str(silver_metrics_dir))
     rows = {row.ticker: row for row in df_silver_metrics.collect()}
 
-    assert rows["TTEN3.SA"].trailing_eps is None
+    assert set(rows) == {"AAPL"}
     assert rows["AAPL"].trailing_eps == 6.5
+    assert "failed_checks" not in df_silver_metrics.columns
 
     df_rejected = spark_session.read.format("delta").load(str(silver_metrics_rejected_dir))
     rejected_rows = df_rejected.collect()
     assert len(rejected_rows) == 1
     assert rejected_rows[0].ticker == "TTEN3.SA"
-    assert rejected_rows[0].metric_name == "trailing_eps"
-    assert float(rejected_rows[0].raw_value) == pytest.approx(-105102.71)
-    assert rejected_rows[0].floor_threshold == -1000
+    assert rejected_rows[0].failed_checks == ["trailing_eps"]
+    assert float(rejected_rows[0].trailing_eps) == pytest.approx(-105102.71)
+    assert rejected_rows[0].market_cap == 4969374000
+    assert rejected_rows[0].rejected_at is not None
 
 
-def test_silver_metrics_nulls_implausible_price_to_sales_and_operating_margins(spark_session, tmp_path):
-    """Test that implausible price_to_sales/operating_margins values are nulled out."""
+def test_silver_metrics_quarantines_row_with_implausible_price_to_sales_and_operating_margins(spark_session, tmp_path):
+    """Test that a row failing several checks is moved whole to the rejected table once, listing every check."""
     bronze_metadata_dir = tmp_path / "bronze_metadata"
     bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
 
@@ -908,18 +910,17 @@ def test_silver_metrics_nulls_implausible_price_to_sales_and_operating_margins(s
     df_silver_metrics = spark_session.read.format("delta").load(str(silver_metrics_dir))
     rows = {row.ticker: row for row in df_silver_metrics.collect()}
 
-    assert rows["BADTICKER"].price_to_sales is None
-    assert rows["BADTICKER"].operating_margins is None
+    assert set(rows) == {"AAPL"}
     assert float(rows["AAPL"].price_to_sales) == pytest.approx(7.2)
     assert rows["AAPL"].operating_margins == 0.25
 
     df_rejected = spark_session.read.format("delta").load(str(silver_metrics_rejected_dir))
-    rejected_by_metric = {row.metric_name: row for row in df_rejected.collect()}
-    assert set(rejected_by_metric) == {"price_to_sales", "operating_margins"}
-    assert rejected_by_metric["price_to_sales"].ticker == "BADTICKER"
-    assert float(rejected_by_metric["price_to_sales"].raw_value) == pytest.approx(-1.4997)
-    assert rejected_by_metric["operating_margins"].ticker == "BADTICKER"
-    assert rejected_by_metric["operating_margins"].raw_value == -274.0
+    rejected_rows = df_rejected.collect()
+    assert len(rejected_rows) == 1
+    assert rejected_rows[0].ticker == "BADTICKER"
+    assert rejected_rows[0].failed_checks == ["price_to_sales", "operating_margins"]
+    assert float(rejected_rows[0].price_to_sales) == pytest.approx(-1.4997)
+    assert rejected_rows[0].operating_margins == -274.0
 
 
 def test_silver_metrics_rerun_replaces_rejected_rows_for_same_date(spark_session, tmp_path):
@@ -980,3 +981,6 @@ def test_silver_metrics_rerun_replaces_rejected_rows_for_same_date(spark_session
 
     df_rejected = spark_session.read.format("delta").load(str(silver_metrics_rejected_dir))
     assert df_rejected.count() == 1
+
+    df_silver_metrics = spark_session.read.format("delta").load(str(silver_metrics_dir))
+    assert [row.ticker for row in df_silver_metrics.collect()] == ["AAPL"]
