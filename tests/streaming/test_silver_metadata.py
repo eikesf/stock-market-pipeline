@@ -1032,3 +1032,39 @@ def test_silver_metadata_quarantined_ticker_keeps_existing_active_record(spark_s
     assert rejected[0].ticker == "AAPL"
     assert rejected[0].pipeline_exec_date == date(2026, 5, 29)
     assert any("sector is missing" in reason for reason in rejected[0].rejection_reasons)
+
+
+@pytest.mark.parametrize(
+    ("pipeline", "silver_constant"),
+    [(run_silver_metadata, "SILVER_METADATA_DIR"), (run_silver_metrics, "SILVER_METRICS_DIR")],
+)
+def test_silver_metadata_replays_the_archive_only_after_a_bronze_rollback(
+    spark_session, tmp_path, pipeline, silver_constant
+):
+    """Test that both metadata pipelines replay the archive after a Bronze rollback.
+
+    They read the same Bronze table, so both have to repair it; a rollback of their own Silver
+    table needs no replay because the next run recomputes it from Bronze.
+    """
+    bronze_dir = tmp_path / "bronze_metadata"
+    silver_dir = tmp_path / "silver"
+
+    for healed, expect_replay in [(bronze_dir, True), (silver_dir, False)]:
+        with (
+            patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_dir),
+            patch(f"src.streaming.silver_metadata.{silver_constant}", silver_dir),
+            patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+            patch(
+                "src.streaming.silver_metadata.read_delta_table",
+                side_effect=Exception("FAILED_READ_FILE.NO_HINT"),
+            ),
+            patch("src.streaming.silver_metadata.check_and_heal_corrupt_data_file", return_value=healed),
+            patch("src.streaming.silver_metadata.recover_bronze_from_archive") as mock_recover,
+            patch.object(spark_session, "stop"),
+            pytest.raises(RuntimeError, match="self-healed"),
+        ):
+            pipeline("2026-05-28", raise_on_error=True)
+
+        assert mock_recover.called is expect_replay
+        if expect_replay:
+            assert mock_recover.call_args.kwargs["watermark_column"] == "extraction_date"
