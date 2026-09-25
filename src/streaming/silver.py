@@ -5,7 +5,13 @@ from datetime import date
 from pyspark.sql.functions import col, row_number, trim, upper, when
 from pyspark.sql.window import Window
 
-from src.producer.config import BRONZE_PRICES_DIR, SILVER_PRICES_DIR, SILVER_PRICES_REJECTED_DIR
+from src.producer.config import (
+    ARCHIVE_PRICES_DIR,
+    BRONZE_PRICES_DIR,
+    LANDING_PRICES_DIR,
+    SILVER_PRICES_DIR,
+    SILVER_PRICES_REJECTED_DIR,
+)
 from src.streaming.quality_rules import (
     PRICES_REQUIRED_COLUMNS,
     classify,
@@ -14,7 +20,12 @@ from src.streaming.quality_rules import (
     split_valid_rejected,
 )
 from src.streaming.spark_session import create_spark_session
-from src.streaming.utils import check_and_heal_corrupt_data_file, read_delta_table, write_delta_table
+from src.streaming.utils import (
+    check_and_heal_corrupt_data_file,
+    read_delta_table,
+    recover_bronze_from_archive,
+    write_delta_table,
+)
 from src.utils.logger import logger
 
 
@@ -104,9 +115,24 @@ def run_silver(exec_date: str, raise_on_error: bool = False) -> None:
 
     except Exception as e:
         logger.exception(f"Failed to process Silver layer: {e}")
-        healed = check_and_heal_corrupt_data_file([BRONZE_PRICES_DIR], str(e), spark)
+        healed = check_and_heal_corrupt_data_file(
+            [BRONZE_PRICES_DIR, SILVER_PRICES_DIR, SILVER_PRICES_REJECTED_DIR], str(e), spark
+        )
         if healed:
             logger.warning("Corrupted data file detected and Delta table self-healed. Reverted to previous version.")
+            if healed == BRONZE_PRICES_DIR:
+                # Bronze is the only copy of the ingested rows, so a rollback there has to be
+                # followed by replaying the archived landing files the rollback discarded.
+                recover_bronze_from_archive(
+                    paths={
+                        "landing": LANDING_PRICES_DIR,
+                        "archive": ARCHIVE_PRICES_DIR,
+                        "bronze": BRONZE_PRICES_DIR,
+                    },
+                    domain_name="Prices",
+                    watermark_column="date",
+                    spark=spark,
+                )
             if raise_on_error:
                 raise RuntimeError(
                     "Corrupted data file detected and Delta table self-healed. Please retry the task."

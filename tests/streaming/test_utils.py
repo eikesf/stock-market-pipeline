@@ -8,10 +8,15 @@ import pyarrow.parquet as pq
 from src.streaming.utils import (
     check_and_heal_corrupt_data_file,
     extract_corrupt_parquet_filename,
+    find_archive_dates,
     find_version_introducing_file,
     get_clickhouse_client,
     heal_corrupt_delta_checkpoints,
+    is_corruption_error,
     read_delta_table,
+    recover_bronze_from_archive,
+    replay_archive_to_bronze,
+    verify_delta_table,
     write_delta_table,
 )
 
@@ -241,9 +246,195 @@ def test_check_and_heal_corrupt_data_file(tmp_path):
     with patch("delta.tables.DeltaTable.forPath", return_value=mock_dt):
         healed = check_and_heal_corrupt_data_file([tmp_path], error_msg, mock_spark)
 
-    assert healed is True
+    # The healed table's path is returned, not just a flag: callers use it to tell a Bronze
+    # rollback (which needs an archive replay) from a Silver one (which can be recomputed).
+    assert healed == tmp_path
     # Assert it called restoreToVersion with prev version (126)
     mock_dt.restoreToVersion.assert_called_once_with(126)
     # Assert the physical files were deleted
     assert not corrupt_file.exists()
     assert not crc_file.exists()
+
+
+def _write_delta_like_table(tmp_path, rows=3):
+    """Create a directory shaped like a Delta table with one readable data file."""
+    table = tmp_path / "table"
+    (table / "_delta_log").mkdir(parents=True, exist_ok=True)
+    data_file = table / "part-00000-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-c000.snappy.parquet"
+    pq.write_table(pa.table({"a": list(range(rows))}), str(data_file))
+    return table, data_file
+
+
+def test_verify_delta_table_reports_nothing_for_a_healthy_table(tmp_path):
+    """Test that a table whose data files all read cleanly reports no corruption."""
+    table, _ = _write_delta_like_table(tmp_path)
+
+    assert verify_delta_table(table) == []
+
+
+def test_verify_delta_table_detects_a_zero_filled_data_file(tmp_path):
+    """Test detection of the observed corruption shape: zero-filled head, intact footer.
+
+    This is what the Docker bind mount produced: the parquet footer survived while the earlier
+    data pages were lost, so the file looks structurally plausible until a row group is read.
+    """
+    table, data_file = _write_delta_like_table(tmp_path, rows=500)
+    original = data_file.read_bytes()
+    # Keep the final 200 bytes (footer + PAR1 magic) and zero everything before it.
+    data_file.write_bytes(b"\x00" * (len(original) - 200) + original[-200:])
+
+    corrupt = verify_delta_table(table)
+
+    assert corrupt == [data_file.name]
+
+
+def test_verify_delta_table_ignores_a_non_delta_directory(tmp_path):
+    """Test that a directory without a _delta_log is skipped rather than scanned."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    pq.write_table(pa.table({"a": [1]}), str(plain / "data.parquet"))
+
+    assert verify_delta_table(plain) == []
+
+
+def test_verify_delta_table_skips_checkpoint_files(tmp_path):
+    """Test that transaction-log checkpoints are not reported as data corruption.
+
+    Checkpoint damage is handled separately by heal_corrupt_delta_checkpoints, so counting it here
+    would send the caller down the wrong recovery path.
+    """
+    table, _ = _write_delta_like_table(tmp_path)
+    (table / "_delta_log" / "00000000000000000001.checkpoint.parquet").write_bytes(b"not a parquet file")
+
+    assert verify_delta_table(table) == []
+
+
+def test_is_corruption_error_matches_real_signatures():
+    """Test that the real failure signatures from the incident are recognised."""
+    assert is_corruption_error("org.apache.spark.SparkException: [FAILED_READ_FILE.NO_HINT] ...")
+    assert is_corruption_error("Required field 'uncompressed_page_size' was not found")
+    assert is_corruption_error("part-00000-0913d207-ad5c-4111-b1eb-30e3ed00412b-c000.snappy.parquet")
+    assert is_corruption_error("org.apache.hadoop.fs.ChecksumException: Checksum error")
+
+
+def test_is_corruption_error_ignores_unrelated_failures():
+    """Test that ordinary errors do not trigger the recovery path."""
+    assert not is_corruption_error("ValueError: Invalid date format. Please use YYYY-MM-DD format.")
+    assert not is_corruption_error("Soda quality scan failed for silver_metrics with code 2.")
+    assert not is_corruption_error("ConcurrentAppendException: Files were added by a concurrent update")
+
+
+def test_find_archive_dates_parses_and_sorts_execution_dates(tmp_path):
+    """Test that archive execution dates are discovered oldest first, ignoring stray files."""
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    for name in [
+        "tickers_2026-09-20.parquet",
+        "tickers_2026-06-21.parquet",
+        "tickers_2026-08-01.parquet",
+        "tickers_not-a-date.parquet",
+        "ticker_metadata_2026-09-20.parquet",
+    ]:
+        (archive / name).touch()
+
+    assert find_archive_dates(archive, "Prices") == ["2026-06-21", "2026-08-01", "2026-09-20"]
+    assert find_archive_dates(archive, "Metadata") == ["2026-09-20"]
+
+
+def test_replay_archive_to_bronze_returns_false_when_file_is_absent(tmp_path):
+    """Test that replaying a date with no archived file is reported rather than raising."""
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    bronze = tmp_path / "bronze"
+    bronze.mkdir()
+
+    assert replay_archive_to_bronze("2026-09-20", {"archive": archive, "bronze": bronze}, "Prices") is False
+
+
+def _archive_with_dates(tmp_path, dates, domain="Prices"):
+    """Create an archive directory holding one (empty) archived file per execution date."""
+    archive = tmp_path / "archive"
+    archive.mkdir(exist_ok=True)
+    prefix = "tickers_" if domain == "Prices" else "ticker_metadata_"
+    for exec_date in dates:
+        (archive / f"{prefix}{exec_date}.parquet").touch()
+    return archive
+
+
+@patch("src.streaming.utils.replay_archive_to_bronze", return_value=True)
+@patch("src.streaming.utils.read_delta_table")
+def test_recover_bronze_replays_only_dates_at_or_after_the_watermark(mock_read, mock_replay, tmp_path):
+    """Test that recovery replays from the watermark instead of the whole archive.
+
+    Inclusive of the watermark itself: the commit holding it may have been partially discarded by
+    the rollback, and a duplicate replay is deduplicated by Silver while a gap would be permanent.
+    """
+    archive = _archive_with_dates(tmp_path, ["2026-09-18", "2026-09-21", "2026-09-22", "2026-09-23"])
+    mock_read.return_value.agg.return_value.collect.return_value = [["2026-09-21"]]
+
+    replayed = recover_bronze_from_archive(
+        paths={"archive": archive, "bronze": tmp_path / "bronze"},
+        domain_name="Prices",
+        watermark_column="date",
+        spark=MagicMock(),
+    )
+
+    assert replayed == 3
+    replayed_dates = [call.args[0] for call in mock_replay.call_args_list]
+    assert replayed_dates == ["2026-09-21", "2026-09-22", "2026-09-23"]
+
+
+@patch("src.streaming.utils.replay_archive_to_bronze", return_value=True)
+@patch("src.streaming.utils.read_delta_table", side_effect=Exception("Path does not exist"))
+def test_recover_bronze_replays_everything_when_the_watermark_is_unreadable(mock_read, mock_replay, tmp_path):
+    """Test that an unreadable table after rollback falls back to a full archive replay."""
+    archive = _archive_with_dates(tmp_path, ["2026-09-18", "2026-09-21"])
+
+    replayed = recover_bronze_from_archive(
+        paths={"archive": archive, "bronze": tmp_path / "bronze"},
+        domain_name="Prices",
+        watermark_column="date",
+        spark=MagicMock(),
+    )
+
+    assert replayed == 2
+    assert [call.args[0] for call in mock_replay.call_args_list] == ["2026-09-18", "2026-09-21"]
+
+
+@patch("src.streaming.utils.replay_archive_to_bronze", side_effect=[Exception("write failed"), True])
+@patch("src.streaming.utils.read_delta_table")
+def test_recover_bronze_continues_after_a_failed_replay(mock_read, mock_replay, tmp_path):
+    """Test that one unreadable archived file does not abort the remaining replays.
+
+    The caller still fails loudly on the original corruption, so a partial recovery is reported
+    rather than masking it with the replay error.
+    """
+    archive = _archive_with_dates(tmp_path, ["2026-09-21", "2026-09-22"])
+    mock_read.return_value.agg.return_value.collect.return_value = [["2026-09-21"]]
+
+    replayed = recover_bronze_from_archive(
+        paths={"archive": archive, "bronze": tmp_path / "bronze"},
+        domain_name="Prices",
+        watermark_column="date",
+        spark=MagicMock(),
+    )
+
+    assert replayed == 1
+    assert mock_replay.call_count == 2
+
+
+@patch("src.streaming.utils.replay_archive_to_bronze")
+def test_recover_bronze_does_nothing_without_an_archive(mock_replay, tmp_path):
+    """Test that an empty archive is reported rather than raising or replaying blindly."""
+    archive = _archive_with_dates(tmp_path, [])
+
+    assert (
+        recover_bronze_from_archive(
+            paths={"archive": archive, "bronze": tmp_path / "bronze"},
+            domain_name="Prices",
+            watermark_column="date",
+            spark=MagicMock(),
+        )
+        == 0
+    )
+    mock_replay.assert_not_called()
