@@ -709,6 +709,9 @@ def test_silver_metrics_cleaning_and_casting(spark_session, tmp_path):
     silver_metrics_dir = tmp_path / "silver_metrics"
     silver_metrics_dir.mkdir(parents=True, exist_ok=True)
 
+    silver_metrics_rejected_dir = tmp_path / "silver_metrics_rejected"
+    silver_metrics_rejected_dir.mkdir(parents=True, exist_ok=True)
+
     df_bronze = pd.DataFrame(
         {
             "ticker": [" aapl "],
@@ -750,6 +753,7 @@ def test_silver_metrics_cleaning_and_casting(spark_session, tmp_path):
     with (
         patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
         patch("src.streaming.silver_metadata.SILVER_METRICS_DIR", silver_metrics_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_REJECTED_DIR", silver_metrics_rejected_dir),
         patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
@@ -783,6 +787,9 @@ def test_silver_metrics_nulls_implausible_trailing_eps(spark_session, tmp_path):
 
     silver_metrics_dir = tmp_path / "silver_metrics"
     silver_metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_rejected_dir = tmp_path / "silver_metrics_rejected"
+    silver_metrics_rejected_dir.mkdir(parents=True, exist_ok=True)
 
     df_bronze = pd.DataFrame(
         {
@@ -822,6 +829,7 @@ def test_silver_metrics_nulls_implausible_trailing_eps(spark_session, tmp_path):
     with (
         patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
         patch("src.streaming.silver_metadata.SILVER_METRICS_DIR", silver_metrics_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_REJECTED_DIR", silver_metrics_rejected_dir),
         patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
@@ -832,3 +840,143 @@ def test_silver_metrics_nulls_implausible_trailing_eps(spark_session, tmp_path):
 
     assert rows["TTEN3.SA"].trailing_eps is None
     assert rows["AAPL"].trailing_eps == 6.5
+
+    df_rejected = spark_session.read.format("delta").load(str(silver_metrics_rejected_dir))
+    rejected_rows = df_rejected.collect()
+    assert len(rejected_rows) == 1
+    assert rejected_rows[0].ticker == "TTEN3.SA"
+    assert rejected_rows[0].metric_name == "trailing_eps"
+    assert float(rejected_rows[0].raw_value) == pytest.approx(-105102.71)
+    assert rejected_rows[0].floor_threshold == -1000
+
+
+def test_silver_metrics_nulls_implausible_price_to_sales_and_operating_margins(spark_session, tmp_path):
+    """Test that implausible price_to_sales/operating_margins values are nulled out."""
+    bronze_metadata_dir = tmp_path / "bronze_metadata"
+    bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_dir = tmp_path / "silver_metrics"
+    silver_metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_rejected_dir = tmp_path / "silver_metrics_rejected"
+    silver_metrics_rejected_dir.mkdir(parents=True, exist_ok=True)
+
+    df_bronze = pd.DataFrame(
+        {
+            "ticker": ["BADTICKER", "AAPL"],
+            "dividend_yield": [0.0, 0.0051],
+            "trailing_pe": [None, 15.42],
+            "market_cap": [4969374000, 2600000000000],
+            "peg_ratio": [None, 1.5],
+            "price_to_book": [None, 2.5],
+            "enterprise_to_ebitda": [None, 12.3],
+            "enterprise_to_ebit": [None, 14.1],
+            "book_value": [None, 35.2],
+            "trailing_eps": [None, 6.5],
+            "price_to_sales": [-1.4997, 7.2],
+            "operating_margins": [-274.0, 0.25],
+            "asset_turnover": [None, 0.8],
+            "shares_outstanding": [500440447, 15000000000],
+            "ebitda": [None, 100000000000],
+            "total_debt": [None, 120000000000],
+            "total_cash": [None, 80000000000],
+            "debt_to_equity": [None, 1.5],
+            "roa": [None, 0.12],
+            "roe": [None, 0.28],
+            "current_ratio": [None, 1.8],
+            "gross_margins": [None, 0.42],
+            "ebitda_margins": [None, 0.32],
+            "profit_margins": [None, 0.21],
+            "net_income_to_common": [583464000, 80000000000],
+            "extraction_date": ["2026-08-03", "2026-08-03"],
+            "ingestion_timestamp": ["2026-08-03 00:00:00", "2026-08-03 00:00:00"],
+        }
+    )
+
+    df_bronze_spark = spark_session.createDataFrame(df_bronze)
+    df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
+
+    with (
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_DIR", silver_metrics_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_REJECTED_DIR", silver_metrics_rejected_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+        patch.object(spark_session, "stop"),
+    ):
+        run_silver_metrics("2026-08-03")
+
+    df_silver_metrics = spark_session.read.format("delta").load(str(silver_metrics_dir))
+    rows = {row.ticker: row for row in df_silver_metrics.collect()}
+
+    assert rows["BADTICKER"].price_to_sales is None
+    assert rows["BADTICKER"].operating_margins is None
+    assert float(rows["AAPL"].price_to_sales) == pytest.approx(7.2)
+    assert rows["AAPL"].operating_margins == 0.25
+
+    df_rejected = spark_session.read.format("delta").load(str(silver_metrics_rejected_dir))
+    rejected_by_metric = {row.metric_name: row for row in df_rejected.collect()}
+    assert set(rejected_by_metric) == {"price_to_sales", "operating_margins"}
+    assert rejected_by_metric["price_to_sales"].ticker == "BADTICKER"
+    assert float(rejected_by_metric["price_to_sales"].raw_value) == pytest.approx(-1.4997)
+    assert rejected_by_metric["operating_margins"].ticker == "BADTICKER"
+    assert rejected_by_metric["operating_margins"].raw_value == -274.0
+
+
+def test_silver_metrics_rerun_replaces_rejected_rows_for_same_date(spark_session, tmp_path):
+    """Test that rerunning the pipeline for the same date replaces (not duplicates) quarantined rows."""
+    bronze_metadata_dir = tmp_path / "bronze_metadata"
+    bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_dir = tmp_path / "silver_metrics"
+    silver_metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_rejected_dir = tmp_path / "silver_metrics_rejected"
+    silver_metrics_rejected_dir.mkdir(parents=True, exist_ok=True)
+
+    df_bronze = pd.DataFrame(
+        {
+            "ticker": ["BADTICKER", "AAPL"],
+            "dividend_yield": [0.005, 0.0051],
+            "trailing_pe": [12.0, 15.42],
+            "market_cap": [4969374000, 2600000000000],
+            "peg_ratio": [1.0, 1.5],
+            "price_to_book": [2.0, 2.5],
+            "enterprise_to_ebitda": [10.0, 12.3],
+            "enterprise_to_ebit": [11.0, 14.1],
+            "book_value": [30.0, 35.2],
+            "trailing_eps": [5.0, 6.5],
+            "price_to_sales": [-1.4997, 7.2],
+            "operating_margins": [0.1, 0.25],
+            "asset_turnover": [0.7, 0.8],
+            "shares_outstanding": [500440447, 15000000000],
+            "ebitda": [90000000000, 100000000000],
+            "total_debt": [110000000000, 120000000000],
+            "total_cash": [70000000000, 80000000000],
+            "debt_to_equity": [1.2, 1.5],
+            "roa": [0.1, 0.12],
+            "roe": [0.25, 0.28],
+            "current_ratio": [1.5, 1.8],
+            "gross_margins": [0.4, 0.42],
+            "ebitda_margins": [0.3, 0.32],
+            "profit_margins": [0.2, 0.21],
+            "net_income_to_common": [583464000, 80000000000],
+            "extraction_date": ["2026-08-03", "2026-08-03"],
+            "ingestion_timestamp": ["2026-08-03 00:00:00", "2026-08-03 00:00:00"],
+        }
+    )
+
+    df_bronze_spark = spark_session.createDataFrame(df_bronze)
+    df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
+
+    with (
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_DIR", silver_metrics_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_REJECTED_DIR", silver_metrics_rejected_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+        patch.object(spark_session, "stop"),
+    ):
+        run_silver_metrics("2026-08-03")
+        run_silver_metrics("2026-08-03")
+
+    df_rejected = spark_session.read.format("delta").load(str(silver_metrics_rejected_dir))
+    assert df_rejected.count() == 1

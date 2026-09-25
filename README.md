@@ -220,7 +220,7 @@ stock_market_pipeline/
 ├── data/                    # Shared data volume (created at runtime)
 │   ├── bronze/              # Delta Bronze layer (prices/ & metadata/)
 │   ├── landing/             # Raw extractions (prices/ & metadata/)
-│   └── silver/              # Delta Silver layer (prices/, metadata/, metrics/)
+│   └── silver/              # Delta Silver layer (prices/, metadata/, metrics/, metrics_rejected/)
 ├── docker/
 │   ├── Dockerfile           # Python 3.13 + Java 21 image
 │   └── docker-compose.yml   # Full multi-service stack (Airflow, ClickHouse, Python)
@@ -348,6 +348,7 @@ The CI pipeline runs both checks automatically on every push and pull request.
 Automated data quality contracts are integrated in both the **Silver** and **Gold** layers of the Medallion architecture using **Soda Core** and **SodaCL**.
 
 *   **Silver Layer Validation**: Ensures structural, schema, and volume integrity of our local Delta tables (`silver_prices`, `silver_metadata`, `silver_metrics`) using Spark sessions. Delta tables are loaded dynamically as temporary views in PySpark before running the scans.
+*   **Outlier Quarantine (pre-scan sanitization)**: Before the Silver metrics Soda scan runs, implausible `trailing_eps`, `price_to_sales`, and `operating_margins` values (e.g. a negative price-to-sales ratio) are nulled out in `silver_metrics` and captured with their raw value in a separate `silver_metrics_rejected` Delta table for audit, instead of letting one bad ticker fail the entire batch's quality scan.
 *   **Gold Layer Validation**: Ensures that OLAP analytical tables and views loaded in the ClickHouse database (`fact_prices`, `dim_companies`, `fact_company_metrics`, `v_companies_performance`, `v_fact_prices_converted`) conform to the business expectations using ClickHouse's MySQL wire protocol (port `9004`).
 
 #### Contract Schema files:
