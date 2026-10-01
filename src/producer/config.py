@@ -24,6 +24,10 @@ BRONZE_METADATA_DIR = DATA_DIR / "bronze" / METADATA_DOMAIN
 SILVER_PRICES_DIR = DATA_DIR / "silver" / PRICES_DOMAIN
 SILVER_METADATA_DIR = DATA_DIR / "silver" / METADATA_DOMAIN
 SILVER_METRICS_DIR = DATA_DIR / "silver" / "metrics"
+
+# Quarantine tables: rows breaching a Silver quality rule land here instead of the valid table.
+SILVER_PRICES_REJECTED_DIR = DATA_DIR / "silver" / "prices_rejected"
+SILVER_METADATA_REJECTED_DIR = DATA_DIR / "silver" / "metadata_rejected"
 SILVER_METRICS_REJECTED_DIR = DATA_DIR / "silver" / "metrics_rejected"
 
 # Assure the directories exist before attempting to write into them
@@ -37,6 +41,8 @@ for d in [
     SILVER_PRICES_DIR,
     SILVER_METADATA_DIR,
     SILVER_METRICS_DIR,
+    SILVER_PRICES_REJECTED_DIR,
+    SILVER_METADATA_REJECTED_DIR,
     SILVER_METRICS_REJECTED_DIR,
 ]:
     d.mkdir(parents=True, exist_ok=True)
