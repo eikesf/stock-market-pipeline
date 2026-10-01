@@ -294,6 +294,126 @@ def extract_corrupt_parquet_filename(error_message: str) -> str | None:
     return match.group(1) if match else None
 
 
+def is_corruption_error(error_message: str) -> bool:
+    """Check whether an exception message carries a parquet corruption signature.
+
+    Used to decide whether a failure is worth attempting recovery on, rather than running the
+    recovery path for every unrelated error.
+
+    Args:
+        error_message: Exception message to inspect.
+
+    Returns:
+        True if the message looks like a corrupt or unreadable parquet file.
+    """
+    signatures = (
+        "FAILED_READ_FILE",
+        "uncompressed_page_size",
+        "can not read class org.apache.parquet",
+        "is not a Parquet file",
+        "ChecksumException",
+        "TASK_WRITE_FAILED",
+    )
+    return any(signature in error_message for signature in signatures) or bool(
+        extract_corrupt_parquet_filename(error_message)
+    )
+
+
+def verify_delta_table(path: str | Path) -> list[str]:
+    """Read every data file in a Delta table to find physically corrupt parquet files.
+
+    Proactive counterpart to the reactive healing below: nothing else in the pipeline notices a
+    damaged file until a query happens to touch it, which previously let corruption sit unreported
+    for weeks. Reads each row group because a file's footer can be intact while its data pages are
+    not, which is exactly how the observed corruption presented.
+
+    Args:
+        path: Path to the Delta table directory.
+
+    Returns:
+        Names of the corrupt data files, empty when the table is healthy.
+    """
+    table_path = Path(path)
+    if not (table_path / "_delta_log").exists():
+        return []
+
+    corrupt: list[str] = []
+    for data_file in sorted(table_path.rglob("*.parquet")):
+        if "_delta_log" in data_file.parts:
+            continue
+        try:
+            parquet_file = pq.ParquetFile(str(data_file))
+            for row_group in range(parquet_file.num_row_groups):
+                parquet_file.read_row_group(row_group)
+        except Exception as e:
+            logger.warning(f"Corrupt data file detected in {table_path}: {data_file.name} ({e})")
+            corrupt.append(data_file.name)
+    return corrupt
+
+
+def replay_archive_to_bronze(
+    exec_date: str, paths: dict[str, Path], domain_name: str, spark: SparkSession | None = None
+) -> bool:
+    """Re-ingest an already-archived landing file into Bronze.
+
+    `ingest_landing_to_bronze` deliberately refuses to re-process an archived file, which is
+    correct for scheduled runs but blocks recovery. This is the explicit escape hatch for it: it
+    reads straight from the archive and does not move anything, leaving the archive intact as the
+    replay log. Duplicate Bronze rows are harmless because Silver deduplicates on
+    (ticker, date) keeping the latest ingestion_timestamp.
+
+    Args:
+        exec_date: Execution date of the archived file, in YYYY-MM-DD format.
+        paths: Dictionary containing at least 'archive' and 'bronze' Paths.
+        domain_name: Domain being replayed (e.g. 'Prices', 'Metadata').
+        spark: An already-active Spark session to reuse. Only a session created here is stopped
+            here — a caller recovering mid-failure still needs its own session afterwards.
+
+    Returns:
+        True if the file was replayed, False if it was not found.
+    """
+    archive_file = paths["archive"] / resolve_bronze_filename(exec_date, domain_name)
+    if not archive_file.exists():
+        logger.warning(f"Cannot replay {domain_name} for {exec_date}: {archive_file} not found.")
+        return False
+
+    session = spark or create_spark_session()
+    try:
+        df_raw = (
+            session.read.format("parquet")
+            .load(str(archive_file))
+            .withColumn("ingestion_timestamp", current_timestamp())
+        )
+        write_delta_table(df_raw, paths["bronze"], mode="append")
+        logger.success(f"Replayed archived {domain_name} file for {exec_date} into Bronze.")
+        return True
+    finally:
+        if spark is None:
+            session.stop()
+
+
+def find_archive_dates(archive_dir: Path, domain_name: str) -> list[str]:
+    """List the execution dates available in an archive directory, oldest first.
+
+    Args:
+        archive_dir: Archive directory holding the processed landing files.
+        domain_name: Domain being inspected (e.g. 'Prices', 'Metadata').
+
+    Returns:
+        Sorted execution dates parsed from the archived filenames.
+    """
+    prefix = resolve_bronze_filename("", domain_name).replace(".parquet", "")
+    dates = []
+    for archived in archive_dir.glob(f"{prefix}*.parquet"):
+        candidate = archived.stem.removeprefix(prefix)
+        try:
+            date.fromisoformat(candidate)
+        except ValueError:
+            continue
+        dates.append(candidate)
+    return sorted(dates)
+
+
 def find_version_introducing_file(table_path: Path, filename: str) -> int | None:
     """Scan Delta Table logs descending to find the version that introduced a file."""
     log_dir = table_path / "_delta_log"
@@ -316,7 +436,9 @@ def find_version_introducing_file(table_path: Path, filename: str) -> int | None
     return None
 
 
-def check_and_heal_corrupt_data_file(table_paths: list[str | Path], error_message: str, spark: SparkSession) -> bool:
+def check_and_heal_corrupt_data_file(
+    table_paths: list[str | Path], error_message: str, spark: SparkSession
+) -> Path | None:
     """Detect corrupted parquet files in a list of tables and rollback Delta table versions.
 
     Args:
@@ -325,11 +447,13 @@ def check_and_heal_corrupt_data_file(table_paths: list[str | Path], error_messag
         spark: The active Spark session.
 
     Returns:
-        True if a corrupt file was found and table successfully healed/rolled back.
+        The path of the table that was healed, or None if nothing was healed. Callers need the
+        identity of the table and not just a boolean, because rolling back Bronze loses rows that
+        no upstream table can recompute and has to be followed by an archive replay.
     """
     corrupt_filename = extract_corrupt_parquet_filename(error_message)
     if not corrupt_filename:
-        return False
+        return None
 
     for path_str in table_paths:
         path = Path(path_str)
@@ -367,8 +491,73 @@ def check_and_heal_corrupt_data_file(table_paths: list[str | Path], error_messag
             except Exception as fe:
                 logger.warning(f"Failed to delete physical file {corrupt_file_path}: {fe}")
 
-            return True
+            return path
         except Exception as re:
             logger.error(f"Failed to execute Delta table restore on {path} to version {prev_version}: {re}")
 
-    return False
+    return None
+
+
+def recover_bronze_from_archive(
+    paths: dict[str, Path],
+    domain_name: str,
+    watermark_column: str,
+    spark: SparkSession,
+) -> int:
+    """Replay archived landing files that a Bronze rollback discarded.
+
+    Rolling a Bronze table back to the version before a corrupt file also discards every good
+    commit made after it, and unlike Silver those rows cannot be recomputed from an upstream
+    table. They can, however, be replayed from the archive, which keeps one file per execution
+    date. Rather than replaying the whole archive, this reads the highest value still present in
+    the restored table and replays only the files past it.
+
+    The watermark does not need to be exact. Bronze is an append log and Silver deduplicates on
+    (ticker, date) keeping the latest ingestion_timestamp, so replaying an overlapping file is
+    harmless, whereas skipping one would leave a permanent hole.
+
+    Args:
+        paths: Dictionary containing 'archive' and 'bronze' Paths.
+        domain_name: Domain being recovered (e.g. 'Prices', 'Metadata').
+        watermark_column: Date column used to decide what is missing ('date' for prices,
+            'extraction_date' for metadata).
+        spark: The active Spark session.
+
+    Returns:
+        The number of archived files replayed.
+    """
+    archive_dates = find_archive_dates(paths["archive"], domain_name)
+    if not archive_dates:
+        logger.warning(f"No archived {domain_name} files available to replay.")
+        return 0
+
+    try:
+        restored = read_delta_table(spark, paths["bronze"])
+        watermark_row = restored.agg({watermark_column: "max"}).collect()[0][0]
+    except Exception as e:
+        logger.warning(f"Could not read the {domain_name} watermark after rollback: {e}. Replaying the full archive.")
+        watermark_row = None
+
+    if watermark_row is None:
+        missing = archive_dates
+    else:
+        watermark = str(watermark_row)
+        # Inclusive of the watermark itself: the commit holding it may have been partially
+        # discarded, and a duplicate replay is cheaper than a missing day.
+        missing = [d for d in archive_dates if d >= watermark]
+        logger.info(
+            f"{domain_name} watermark after rollback is {watermark}; replaying {len(missing)} archived file(s)."
+        )
+
+    replayed = 0
+    for exec_date in missing:
+        # A failed replay must not mask the corruption that triggered the recovery, nor stop the
+        # remaining dates from being replayed: it is logged and the caller still fails loudly.
+        try:
+            if replay_archive_to_bronze(exec_date, paths, domain_name, spark):
+                replayed += 1
+        except Exception as e:
+            logger.error(f"Failed to replay archived {domain_name} file for {exec_date}: {e}")
+
+    logger.success(f"Replayed {replayed} archived {domain_name} file(s) into Bronze after rollback.")
+    return replayed

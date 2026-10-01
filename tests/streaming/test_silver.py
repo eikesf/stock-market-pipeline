@@ -485,3 +485,37 @@ def test_silver_prices_quarantines_partial_nulls_on_a_traded_row(spark_session, 
     reasons = rejected[0].rejection_reasons
     assert any("open is missing" in reason for reason in reasons)
     assert any("close is missing" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize(
+    ("healed_table", "expect_replay"),
+    [("bronze", True), ("silver", False)],
+)
+def test_silver_prices_replays_the_archive_only_after_a_bronze_rollback(
+    spark_session, tmp_path, healed_table, expect_replay
+):
+    """Test that an archive replay follows a Bronze rollback but not a Silver one.
+
+    Rolling Bronze back to the version before a corrupt file also discards the good commits made
+    after it, and Bronze holds the only copy of those rows. A Silver rollback needs no replay: the
+    next run recomputes Silver from Bronze.
+    """
+    bronze_dir = tmp_path / "bronze"
+    silver_dir = tmp_path / "silver"
+    healed = bronze_dir if healed_table == "bronze" else silver_dir
+
+    with (
+        patch("src.streaming.silver.BRONZE_PRICES_DIR", bronze_dir),
+        patch("src.streaming.silver.SILVER_PRICES_DIR", silver_dir),
+        patch("src.streaming.silver.create_spark_session", return_value=spark_session),
+        patch("src.streaming.silver.read_delta_table", side_effect=Exception("FAILED_READ_FILE.NO_HINT")),
+        patch("src.streaming.silver.check_and_heal_corrupt_data_file", return_value=healed),
+        patch("src.streaming.silver.recover_bronze_from_archive") as mock_recover,
+        patch.object(spark_session, "stop"),
+        pytest.raises(RuntimeError, match="self-healed"),
+    ):
+        run_silver("2026-05-28", raise_on_error=True)
+
+    assert mock_recover.called is expect_replay
+    if expect_replay:
+        assert mock_recover.call_args.kwargs["watermark_column"] == "date"

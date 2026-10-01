@@ -8,6 +8,7 @@ from airflow.providers.clickhousedb.hooks.clickhouse import ClickHouseHook
 from soda.scan import Scan
 
 from src.streaming.spark_session import create_spark_session
+from src.streaming.utils import check_and_heal_corrupt_data_file, is_corruption_error
 from src.utils.logger import logger
 
 SODA_FAIL_CODE = 2
@@ -114,9 +115,35 @@ def run_silver_scan(table_name: str, contract_path: str) -> None:
     scan.add_sodacl_yaml_file(contract_file)
 
     logger.info(f"--- Executing Soda Scan for {table_name} ---")
-    result = scan.execute()
+    try:
+        result = scan.execute()
+    except Exception as e:
+        # A scan that cannot even read the table is an infrastructure failure, not a data-quality
+        # verdict. Without this the task failed identically on every retry, because the retry
+        # re-read the same damaged file.
+        if is_corruption_error(str(e)) and check_and_heal_corrupt_data_file([path], str(e), spark):
+            spark.stop()
+            raise RuntimeError(
+                f"Corrupt data file under {path} was healed by rollback. Re-run the scan; the "
+                "Silver table may need reprocessing for the affected dates."
+            ) from e
+        spark.stop()
+        raise
 
     sys.stdout.write(scan.get_logs_text() + "\n")
+
+    # Soda swallows a read failure into its own exit code rather than raising, so the corruption
+    # signature has to be recovered from the scan log.
+    scan_logs = scan.get_logs_text()
+    if (
+        result >= SODA_FAIL_CODE
+        and is_corruption_error(scan_logs)
+        and check_and_heal_corrupt_data_file([path], scan_logs, spark)
+    ):
+        raise RuntimeError(
+            f"Corrupt data file under {path} was healed by rollback. Re-run the scan; the "
+            "Silver table may need reprocessing for the affected dates."
+        )
 
     if result >= SODA_FAIL_CODE:
         raise ValueError(

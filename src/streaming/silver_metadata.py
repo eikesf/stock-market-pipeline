@@ -9,7 +9,9 @@ from pyspark.sql.functions import col, lit, row_number, trim, upper, when
 from pyspark.sql.window import Window
 
 from src.producer.config import (
+    ARCHIVE_METADATA_DIR,
     BRONZE_METADATA_DIR,
+    LANDING_METADATA_DIR,
     SILVER_METADATA_DIR,
     SILVER_METADATA_REJECTED_DIR,
     SILVER_METRICS_DIR,
@@ -26,7 +28,12 @@ from src.streaming.quality_rules import (
     split_valid_rejected,
 )
 from src.streaming.spark_session import create_spark_session
-from src.streaming.utils import check_and_heal_corrupt_data_file, read_delta_table, write_delta_table
+from src.streaming.utils import (
+    check_and_heal_corrupt_data_file,
+    read_delta_table,
+    recover_bronze_from_archive,
+    write_delta_table,
+)
 from src.utils.logger import logger
 
 
@@ -60,6 +67,28 @@ def _split_by_quality(df: DataFrame, rules: list[QualityRule], exec_date: str) -
         A `(valid_df, rejected_df)` tuple.
     """
     return split_valid_rejected(classify(df, rules), pipeline_exec_date=exec_date)
+
+
+def _recover_bronze_metadata(spark: SparkSession) -> None:
+    """Replay the archived metadata files a Bronze rollback discarded.
+
+    Both the metadata and metrics pipelines read the same Bronze table, so both share this
+    recovery step. Bronze holds the only copy of the ingested rows: unlike Silver, they cannot be
+    recomputed from an upstream table, only replayed from the archive.
+
+    Args:
+        spark: The active Spark session.
+    """
+    recover_bronze_from_archive(
+        paths={
+            "landing": LANDING_METADATA_DIR,
+            "archive": ARCHIVE_METADATA_DIR,
+            "bronze": BRONZE_METADATA_DIR,
+        },
+        domain_name="Metadata",
+        watermark_column="extraction_date",
+        spark=spark,
+    )
 
 
 def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
@@ -229,9 +258,13 @@ def run_silver_metadata(exec_date: str, raise_on_error: bool = False) -> None:
 
     except Exception as e:
         logger.exception(f"Failed to process Silver layer metadata: {e}")
-        healed = check_and_heal_corrupt_data_file([BRONZE_METADATA_DIR], str(e), spark)
+        healed = check_and_heal_corrupt_data_file(
+            [BRONZE_METADATA_DIR, SILVER_METADATA_DIR, SILVER_METADATA_REJECTED_DIR], str(e), spark
+        )
         if healed:
             logger.warning("Corrupted data file detected and Delta table self-healed. Reverted to previous version.")
+            if healed == BRONZE_METADATA_DIR:
+                _recover_bronze_metadata(spark)
             if raise_on_error:
                 raise RuntimeError(
                     "Corrupted data file detected and Delta table self-healed. Please retry the task."
@@ -369,9 +402,13 @@ def run_silver_metrics(exec_date: str, raise_on_error: bool = False) -> None:
 
     except Exception as e:
         logger.exception(f"Failed to process Silver metrics: {e}")
-        healed = check_and_heal_corrupt_data_file([BRONZE_METADATA_DIR], str(e), spark)
+        healed = check_and_heal_corrupt_data_file(
+            [BRONZE_METADATA_DIR, SILVER_METRICS_DIR, SILVER_METRICS_REJECTED_DIR], str(e), spark
+        )
         if healed:
             logger.warning("Corrupted data file detected and Delta table self-healed. Reverted to previous version.")
+            if healed == BRONZE_METADATA_DIR:
+                _recover_bronze_metadata(spark)
             if raise_on_error:
                 raise RuntimeError(
                     "Corrupted data file detected and Delta table self-healed. Please retry the task."
