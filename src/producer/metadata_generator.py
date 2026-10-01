@@ -1,4 +1,5 @@
 import argparse
+import math
 import sys
 import time
 from datetime import date
@@ -33,13 +34,13 @@ def clean_float(val: object, default: float | None = None) -> float | None:
 
 
 def clean_int(val: object, default: int | None = None) -> int | None:
-    """Safely convert a value to integer, handling null strings."""
+    """Safely convert a value to integer, handling null strings and NaN floats."""
     if val is None:
         return default
     if isinstance(val, int):
         return val
     if isinstance(val, float):
-        return int(val)
+        return default if math.isnan(val) else int(val)
 
     val_str = str(val).strip().lower()
     if val_str not in ("infinity", "inf", "-infinity", "-inf", "nan", "n/a", "null", "none", ""):

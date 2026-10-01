@@ -43,3 +43,4 @@ airflow/config/
 
 # Custom rules
 AGENTS.md
+CLAUDE.md

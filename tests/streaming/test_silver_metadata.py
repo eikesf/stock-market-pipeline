@@ -7,6 +7,7 @@ from loguru import logger
 from pyspark.sql.functions import col
 from pyspark.sql.types import DateType, DecimalType, IntegerType, LongType, StringType, TimestampType
 
+from src.streaming.quality_rules import RequiredColumnMissingError
 from src.streaming.silver_metadata import main, run_silver_metadata, run_silver_metrics
 
 
@@ -78,94 +79,36 @@ def test_silver_metadata_cleaning_and_casting(spark_session, tmp_path):
     assert isinstance(df_silver_metadata.schema["is_active"].dataType, IntegerType)
 
 
-def test_silver_metadata_null_dropping(spark_session, tmp_path):
-    """
-    Test that rows containing null values in critical columns are filtered out.
-    """
+def _metadata_bronze_row(ticker, **overrides):
+    """Build a fully-populated Bronze metadata row, overriding individual fields as needed."""
+    row = {
+        "ticker": ticker,
+        "short_name": f"{ticker} Inc.",
+        "sector": "Technology",
+        "industry": "Software",
+        "country": "USA",
+        "isin": "US5949181045",
+        "full_time_employees": 220000,
+        "exchange": "NASDAQ",
+        "market_cap": 3000000000000,
+        "currency": "USD",
+        "dividend_yield": 0.007,
+        "extraction_date": "2026-05-28",
+        "ingestion_timestamp": "2026-05-28 10:00:00",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_silver_metadata_missing_ticker_fails_the_run(spark_session, tmp_path):
+    """Test that a null ticker fails the whole run instead of being silently dropped."""
     bronze_metadata_dir = tmp_path / "bronze_metadata"
     bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
 
     silver_metadata_dir = tmp_path / "silver_metadata"
     silver_metadata_dir.mkdir(parents=True, exist_ok=True)
 
-    # Using a list of dicts directly prevents Pandas from converting None to string "nan" or float NaN.
-    data_bronze = [
-        {
-            "ticker": "MSFT",
-            "short_name": "Microsoft Corp.",
-            "sector": "Technology",
-            "industry": "Software",
-            "country": "USA",
-            "isin": "US5949181045",
-            "full_time_employees": 220000,
-            "exchange": "NASDAQ",
-            "market_cap": 3000000000000,
-            "currency": "USD",
-            "dividend_yield": 0.007,
-            "extraction_date": "2026-05-28",
-            "ingestion_timestamp": "2026-05-28 10:00:00",
-        },
-        {
-            "ticker": None,
-            "short_name": "No Ticker",
-            "sector": "Technology",
-            "industry": "Software",
-            "country": "USA",
-            "isin": "US123",
-            "full_time_employees": 100,
-            "exchange": "NASDAQ",
-            "market_cap": 1000,
-            "currency": "USD",
-            "dividend_yield": 0.0,
-            "extraction_date": "2026-05-28",
-            "ingestion_timestamp": "2026-05-28 10:00:00",
-        },
-        {
-            "ticker": "AAPL",
-            "short_name": None,
-            "sector": "Technology",
-            "industry": "Electronics",
-            "country": "USA",
-            "isin": "US456",
-            "full_time_employees": 160000,
-            "exchange": "NASDAQ",
-            "market_cap": 2600000000000,
-            "currency": "USD",
-            "dividend_yield": 0.005,
-            "extraction_date": "2026-05-28",
-            "ingestion_timestamp": "2026-05-28 10:00:00",
-        },
-        {
-            "ticker": "GOOGL",
-            "short_name": "Google Inc.",
-            "sector": None,
-            "industry": "Internet",
-            "country": "USA",
-            "isin": "US789",
-            "full_time_employees": 180000,
-            "exchange": "NASDAQ",
-            "market_cap": 1700000000000,
-            "currency": "USD",
-            "dividend_yield": 0.0,
-            "extraction_date": "2026-05-28",
-            "ingestion_timestamp": "2026-05-28 10:00:00",
-        },
-        {
-            "ticker": "AMZN",
-            "short_name": "Amazon Inc.",
-            "sector": "Technology",
-            "industry": "Retail",
-            "country": "USA",
-            "isin": "US101",
-            "full_time_employees": 1500000,
-            "exchange": None,
-            "market_cap": 1800000000000,
-            "currency": "USD",
-            "dividend_yield": 0.0,
-            "extraction_date": "2026-05-28",
-            "ingestion_timestamp": "2026-05-28 10:00:00",
-        },
-    ]
+    data_bronze = [_metadata_bronze_row("MSFT"), _metadata_bronze_row(None)]
 
     df_bronze_spark = spark_session.createDataFrame(data_bronze)
     df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
@@ -175,12 +118,54 @@ def test_silver_metadata_null_dropping(spark_session, tmp_path):
         patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
         patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
+        pytest.raises(RequiredColumnMissingError, match="ticker"),
+    ):
+        run_silver_metadata("2026-05-28", raise_on_error=True)
+
+
+def test_silver_metadata_quarantines_incomplete_rows(spark_session, tmp_path):
+    """Test that rows missing a non-essential column are quarantined instead of silently dropped."""
+    bronze_metadata_dir = tmp_path / "bronze_metadata"
+    bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metadata_dir = tmp_path / "silver_metadata"
+    silver_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metadata_rejected_dir = tmp_path / "silver_metadata_rejected"
+    silver_metadata_rejected_dir.mkdir(parents=True, exist_ok=True)
+
+    # Using a list of dicts directly prevents Pandas from converting None to string "nan" or float NaN.
+    data_bronze = [
+        _metadata_bronze_row("MSFT"),
+        _metadata_bronze_row("AAPL", short_name=None),
+        _metadata_bronze_row("GOOGL", sector=None),
+        _metadata_bronze_row("AMZN", exchange=None),
+        _metadata_bronze_row("TSLA", isin="US123"),
+    ]
+
+    df_bronze_spark = spark_session.createDataFrame(data_bronze)
+    df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
+
+    with (
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METADATA_REJECTED_DIR", silver_metadata_rejected_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+        patch.object(spark_session, "stop"),
     ):
         run_silver_metadata("2026-05-28")
 
     df_silver_metadata = spark_session.read.format("delta").load(str(silver_metadata_dir))
     assert df_silver_metadata.count() == 1
     assert df_silver_metadata.collect()[0].ticker == "MSFT"
+
+    df_rejected = spark_session.read.format("delta").load(str(silver_metadata_rejected_dir))
+    rejected = {row.ticker: row.rejection_reasons for row in df_rejected.collect()}
+    assert set(rejected) == {"AAPL", "GOOGL", "AMZN", "TSLA"}
+    assert any("short_name is missing" in reason for reason in rejected["AAPL"])
+    assert any("sector is missing" in reason for reason in rejected["GOOGL"])
+    assert any("exchange is missing" in reason for reason in rejected["AMZN"])
+    assert any("isin does not match required format" in reason for reason in rejected["TSLA"])
 
 
 def test_silver_metadata_exchange_standardization(spark_session, tmp_path):
@@ -709,6 +694,9 @@ def test_silver_metrics_cleaning_and_casting(spark_session, tmp_path):
     silver_metrics_dir = tmp_path / "silver_metrics"
     silver_metrics_dir.mkdir(parents=True, exist_ok=True)
 
+    silver_metrics_rejected_dir = tmp_path / "silver_metrics_rejected"
+    silver_metrics_rejected_dir.mkdir(parents=True, exist_ok=True)
+
     df_bronze = pd.DataFrame(
         {
             "ticker": [" aapl "],
@@ -750,6 +738,7 @@ def test_silver_metrics_cleaning_and_casting(spark_session, tmp_path):
     with (
         patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
         patch("src.streaming.silver_metadata.SILVER_METRICS_DIR", silver_metrics_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_REJECTED_DIR", silver_metrics_rejected_dir),
         patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
@@ -783,6 +772,9 @@ def test_silver_metrics_nulls_implausible_trailing_eps(spark_session, tmp_path):
 
     silver_metrics_dir = tmp_path / "silver_metrics"
     silver_metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_rejected_dir = tmp_path / "silver_metrics_rejected"
+    silver_metrics_rejected_dir.mkdir(parents=True, exist_ok=True)
 
     df_bronze = pd.DataFrame(
         {
@@ -822,6 +814,7 @@ def test_silver_metrics_nulls_implausible_trailing_eps(spark_session, tmp_path):
     with (
         patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
         patch("src.streaming.silver_metadata.SILVER_METRICS_DIR", silver_metrics_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_REJECTED_DIR", silver_metrics_rejected_dir),
         patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
         patch.object(spark_session, "stop"),
     ):
@@ -830,5 +823,248 @@ def test_silver_metrics_nulls_implausible_trailing_eps(spark_session, tmp_path):
     df_silver_metrics = spark_session.read.format("delta").load(str(silver_metrics_dir))
     rows = {row.ticker: row for row in df_silver_metrics.collect()}
 
-    assert rows["TTEN3.SA"].trailing_eps is None
+    # The whole breaching row is withheld from Silver, not just the offending column nulled
+    assert "TTEN3.SA" not in rows
     assert rows["AAPL"].trailing_eps == 6.5
+
+    df_rejected = spark_session.read.format("delta").load(str(silver_metrics_rejected_dir))
+    rejected_rows = df_rejected.collect()
+    assert len(rejected_rows) == 1
+    assert rejected_rows[0].ticker == "TTEN3.SA"
+    assert any("trailing_eps outside expected range" in reason for reason in rejected_rows[0].rejection_reasons)
+    # The quarantined row keeps its original value for investigation
+    assert float(rejected_rows[0].trailing_eps) == pytest.approx(-105102.71)
+    assert rejected_rows[0].pipeline_exec_date.isoformat() == "2026-08-16"
+    assert rejected_rows[0].rejected_at is not None
+
+
+def test_silver_metrics_nulls_implausible_price_to_sales_and_operating_margins(spark_session, tmp_path):
+    """Test that a row breaching several rules is quarantined once, carrying every reason."""
+    bronze_metadata_dir = tmp_path / "bronze_metadata"
+    bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_dir = tmp_path / "silver_metrics"
+    silver_metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_rejected_dir = tmp_path / "silver_metrics_rejected"
+    silver_metrics_rejected_dir.mkdir(parents=True, exist_ok=True)
+
+    df_bronze = pd.DataFrame(
+        {
+            "ticker": ["BADTICKER", "AAPL"],
+            "dividend_yield": [0.0, 0.0051],
+            "trailing_pe": [None, 15.42],
+            "market_cap": [4969374000, 2600000000000],
+            "peg_ratio": [None, 1.5],
+            "price_to_book": [None, 2.5],
+            "enterprise_to_ebitda": [None, 12.3],
+            "enterprise_to_ebit": [None, 14.1],
+            "book_value": [None, 35.2],
+            "trailing_eps": [None, 6.5],
+            "price_to_sales": [-1.4997, 7.2],
+            "operating_margins": [-274.0, 0.25],
+            "asset_turnover": [None, 0.8],
+            "shares_outstanding": [500440447, 15000000000],
+            "ebitda": [None, 100000000000],
+            "total_debt": [None, 120000000000],
+            "total_cash": [None, 80000000000],
+            "debt_to_equity": [None, 1.5],
+            "roa": [None, 0.12],
+            "roe": [None, 0.28],
+            "current_ratio": [None, 1.8],
+            "gross_margins": [None, 0.42],
+            "ebitda_margins": [None, 0.32],
+            "profit_margins": [None, 0.21],
+            "net_income_to_common": [583464000, 80000000000],
+            "extraction_date": ["2026-08-03", "2026-08-03"],
+            "ingestion_timestamp": ["2026-08-03 00:00:00", "2026-08-03 00:00:00"],
+        }
+    )
+
+    df_bronze_spark = spark_session.createDataFrame(df_bronze)
+    df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
+
+    with (
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_DIR", silver_metrics_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_REJECTED_DIR", silver_metrics_rejected_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+        patch.object(spark_session, "stop"),
+    ):
+        run_silver_metrics("2026-08-03")
+
+    df_silver_metrics = spark_session.read.format("delta").load(str(silver_metrics_dir))
+    rows = {row.ticker: row for row in df_silver_metrics.collect()}
+
+    # The breaching row is withheld from Silver entirely; the clean row is untouched
+    assert "BADTICKER" not in rows
+    assert float(rows["AAPL"].price_to_sales) == pytest.approx(7.2)
+    assert rows["AAPL"].operating_margins == 0.25
+
+    # One quarantined row per source row (not one per breached metric), carrying both reasons
+    df_rejected = spark_session.read.format("delta").load(str(silver_metrics_rejected_dir))
+    rejected_rows = df_rejected.collect()
+    assert len(rejected_rows) == 1
+    assert rejected_rows[0].ticker == "BADTICKER"
+
+    reasons = rejected_rows[0].rejection_reasons
+    assert any("price_to_sales outside expected range" in reason for reason in reasons)
+    assert any("operating_margins outside expected range" in reason for reason in reasons)
+
+    # Original values are preserved for investigation
+    assert float(rejected_rows[0].price_to_sales) == pytest.approx(-1.4997)
+    assert rejected_rows[0].operating_margins == -274.0
+
+
+def test_silver_metrics_rerun_replaces_rejected_rows_for_same_date(spark_session, tmp_path):
+    """Test that rerunning the pipeline for the same date replaces (not duplicates) quarantined rows."""
+    bronze_metadata_dir = tmp_path / "bronze_metadata"
+    bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_dir = tmp_path / "silver_metrics"
+    silver_metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metrics_rejected_dir = tmp_path / "silver_metrics_rejected"
+    silver_metrics_rejected_dir.mkdir(parents=True, exist_ok=True)
+
+    df_bronze = pd.DataFrame(
+        {
+            "ticker": ["BADTICKER", "AAPL"],
+            "dividend_yield": [0.005, 0.0051],
+            "trailing_pe": [12.0, 15.42],
+            "market_cap": [4969374000, 2600000000000],
+            "peg_ratio": [1.0, 1.5],
+            "price_to_book": [2.0, 2.5],
+            "enterprise_to_ebitda": [10.0, 12.3],
+            "enterprise_to_ebit": [11.0, 14.1],
+            "book_value": [30.0, 35.2],
+            "trailing_eps": [5.0, 6.5],
+            "price_to_sales": [-1.4997, 7.2],
+            "operating_margins": [0.1, 0.25],
+            "asset_turnover": [0.7, 0.8],
+            "shares_outstanding": [500440447, 15000000000],
+            "ebitda": [90000000000, 100000000000],
+            "total_debt": [110000000000, 120000000000],
+            "total_cash": [70000000000, 80000000000],
+            "debt_to_equity": [1.2, 1.5],
+            "roa": [0.1, 0.12],
+            "roe": [0.25, 0.28],
+            "current_ratio": [1.5, 1.8],
+            "gross_margins": [0.4, 0.42],
+            "ebitda_margins": [0.3, 0.32],
+            "profit_margins": [0.2, 0.21],
+            "net_income_to_common": [583464000, 80000000000],
+            "extraction_date": ["2026-08-03", "2026-08-03"],
+            "ingestion_timestamp": ["2026-08-03 00:00:00", "2026-08-03 00:00:00"],
+        }
+    )
+
+    df_bronze_spark = spark_session.createDataFrame(df_bronze)
+    df_bronze_spark.write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
+
+    with (
+        patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_DIR", silver_metrics_dir),
+        patch("src.streaming.silver_metadata.SILVER_METRICS_REJECTED_DIR", silver_metrics_rejected_dir),
+        patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+        patch.object(spark_session, "stop"),
+    ):
+        run_silver_metrics("2026-08-03")
+        run_silver_metrics("2026-08-03")
+
+    df_rejected = spark_session.read.format("delta").load(str(silver_metrics_rejected_dir))
+    assert df_rejected.count() == 1
+
+
+def test_silver_metadata_quarantined_ticker_keeps_existing_active_record(spark_session, tmp_path):
+    """Test that bad incoming data does not close out a ticker's existing active SCD Type 2 record.
+
+    Regression test for ordering: if quarantining ran after the SCD Type 2 diff, a ticker whose
+    incoming row is bad would still be merged, deactivating the previously good record and losing
+    history over a single bad extraction.
+    """
+    bronze_metadata_dir = tmp_path / "bronze_metadata"
+    bronze_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metadata_dir = tmp_path / "silver_metadata"
+    silver_metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    silver_metadata_rejected_dir = tmp_path / "silver_metadata_rejected"
+    silver_metadata_rejected_dir.mkdir(parents=True, exist_ok=True)
+
+    def _run(df_bronze, date_str):
+        spark_session.createDataFrame(df_bronze).write.format("delta").mode("overwrite").save(str(bronze_metadata_dir))
+        with (
+            patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_metadata_dir),
+            patch("src.streaming.silver_metadata.SILVER_METADATA_DIR", silver_metadata_dir),
+            patch("src.streaming.silver_metadata.SILVER_METADATA_REJECTED_DIR", silver_metadata_rejected_dir),
+            patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+            patch.object(spark_session, "stop"),
+        ):
+            run_silver_metadata(date_str)
+        return spark_session.read.format("delta").load(str(silver_metadata_dir))
+
+    # Cold start: AAPL lands as the active record
+    _run(_get_bronze_data(["AAPL"], ["Technology"], ["2026-05-28"]), "2026-05-28")
+
+    # Next run: AAPL's incoming row is unusable (sector came back as the upstream placeholder)
+    df_bronze_bad = _get_bronze_data(["AAPL"], ["N/A"], ["2026-05-29"])
+    df_silver = _run(df_bronze_bad, "2026-05-29")
+
+    # The good 2026-05-28 record is still the active one, untouched
+    rows = df_silver.collect()
+    assert len(rows) == 1
+    _assert_row_values(
+        rows[0],
+        {
+            "ticker": "AAPL",
+            "sector": "Technology",
+            "is_active": 1,
+            "start_date": date(2026, 5, 28),
+            "end_date": None,
+        },
+    )
+
+    # The bad incoming row is visible in quarantine instead
+    df_rejected = spark_session.read.format("delta").load(str(silver_metadata_rejected_dir))
+    rejected = df_rejected.collect()
+    assert len(rejected) == 1
+    assert rejected[0].ticker == "AAPL"
+    assert rejected[0].pipeline_exec_date == date(2026, 5, 29)
+    assert any("sector is missing" in reason for reason in rejected[0].rejection_reasons)
+
+
+@pytest.mark.parametrize(
+    ("pipeline", "silver_constant"),
+    [(run_silver_metadata, "SILVER_METADATA_DIR"), (run_silver_metrics, "SILVER_METRICS_DIR")],
+)
+def test_silver_metadata_replays_the_archive_only_after_a_bronze_rollback(
+    spark_session, tmp_path, pipeline, silver_constant
+):
+    """Test that both metadata pipelines replay the archive after a Bronze rollback.
+
+    They read the same Bronze table, so both have to repair it; a rollback of their own Silver
+    table needs no replay because the next run recomputes it from Bronze.
+    """
+    bronze_dir = tmp_path / "bronze_metadata"
+    silver_dir = tmp_path / "silver"
+
+    for healed, expect_replay in [(bronze_dir, True), (silver_dir, False)]:
+        with (
+            patch("src.streaming.silver_metadata.BRONZE_METADATA_DIR", bronze_dir),
+            patch(f"src.streaming.silver_metadata.{silver_constant}", silver_dir),
+            patch("src.streaming.silver_metadata.create_spark_session", return_value=spark_session),
+            patch(
+                "src.streaming.silver_metadata.read_delta_table",
+                side_effect=Exception("FAILED_READ_FILE.NO_HINT"),
+            ),
+            patch("src.streaming.silver_metadata.check_and_heal_corrupt_data_file", return_value=healed),
+            patch("src.streaming.silver_metadata.recover_bronze_from_archive") as mock_recover,
+            patch.object(spark_session, "stop"),
+            pytest.raises(RuntimeError, match="self-healed"),
+        ):
+            pipeline("2026-05-28", raise_on_error=True)
+
+        assert mock_recover.called is expect_replay
+        if expect_replay:
+            assert mock_recover.call_args.kwargs["watermark_column"] == "extraction_date"
