@@ -645,7 +645,7 @@ SELECT
     MAX(p.close) AS peak_price,
     SUM(p.volume) AS total_traded_volume
 FROM stock_market.fact_prices p
-JOIN stock_market.dim_companies c ON p.ticker = c.ticker
+JOIN stock_market.dim_companies c ON p.ticker = c.ticker AND c.is_active = 1
 GROUP BY c.sector, c.short_name
 ORDER BY total_traded_volume DESC;
 ```
@@ -662,7 +662,7 @@ SELECT
         ROWS BETWEEN 29 PRECEDING AND CURRENT ROW
     ) AS moving_avg_30d
 FROM stock_market.fact_prices p
-JOIN stock_market.dim_companies c ON p.ticker = c.ticker
+JOIN stock_market.dim_companies c ON p.ticker = c.ticker AND c.is_active = 1
 WHERE p.date >= today() - INTERVAL 90 DAY
 ORDER BY p.ticker, p.date;
 ```
